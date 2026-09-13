@@ -731,9 +731,15 @@ def _dispatch_authorized_once(
         _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
 
         return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
-    except BaseException:
+    except _BatchAbandoned:
         if reanchor_reserved:
             _restore_post_compaction_reanchor(agent, ref.call_id)
+        raise
+    except BaseException:
+        # Ordinary execution failures are converted into an observed tool
+        # result by the worker. Leave the reservation in flight until
+        # after_call() sees that failure so it can preserve the existing
+        # no-progress count and restore the candidate itself.
         raise
 
 

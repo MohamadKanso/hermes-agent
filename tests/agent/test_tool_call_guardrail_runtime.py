@@ -423,6 +423,58 @@ def test_abandoned_parallel_reanchor_restores_its_one_shot_grant():
     assert guardrails.before_call("read_file", read_args).action == "allow"
 
 
+def test_failed_parallel_reanchor_keeps_count_for_retry_and_next_block():
+    read_args = {"path": "src/app.py"}
+    read_result = "same file contents\n" * 40
+    agent = _make_agent(
+        "read_file",
+        config=_hard_stop_config(
+            hard_stop_after={
+                "exact_failure": 2,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 3,
+            }
+        ),
+    )
+    guardrails = agent._tool_guardrails
+    for _ in range(3):
+        guardrails.after_call("read_file", read_args, read_result, failed=False)
+    guardrails.note_compaction()
+
+    calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-failed-read"),
+    ]
+    with patch(
+        "model_tools.handle_function_call", side_effect=RuntimeError("read failed")
+    ):
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=calls), [], "task-4"
+        )
+
+    retry_calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-retry-read"),
+    ]
+    with patch("model_tools.handle_function_call", return_value=read_result):
+        retry_messages = []
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=retry_calls),
+            retry_messages,
+            "task-4",
+        )
+    assert retry_messages[0]["content"] == read_result
+
+    blocked_calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-blocked-read"),
+    ]
+    blocked_messages = []
+    agent._execute_tool_calls_concurrent(
+        SimpleNamespace(content="", tool_calls=blocked_calls),
+        blocked_messages,
+        "task-4",
+    )
+    assert "idempotent_no_progress_block" in blocked_messages[0]["content"]
+
+
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():
     agent = _make_agent("write_file")
     original_args = {"path": "/original/path", "content": "old"}
