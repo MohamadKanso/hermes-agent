@@ -821,7 +821,7 @@ async def test_slack_native_full_tool_commands_preserves_terminal_command(monkey
         config_data={
             "display": {
                 "platforms": {
-                    "slack": {"tool_progress": "off", "full_tool_commands": True}
+                    "slack": {"full_tool_commands": True}
                 }
             }
         },
