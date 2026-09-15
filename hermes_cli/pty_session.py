@@ -120,7 +120,13 @@ class PtySession:
                 self.detach(ws)
                 return False
         if force_redraw:
-            return await self.write(ws, TUI_FORCE_REDRAW)
+            try:
+                return await self.write(ws, TUI_FORCE_REDRAW)
+            except Exception:
+                # A redraw write can fail before the handler reaches its own detach path.
+                # detach() is identity-checked so a replacement viewer stays attached.
+                self.detach(ws)
+                return False
         return True
 
     def detach(self, ws) -> None:
