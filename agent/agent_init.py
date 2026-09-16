@@ -1900,6 +1900,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         model=agent.model, base_url=agent.base_url, provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
     )
+    from agent.agent_runtime_helpers import _ensure_answer_in_reasoning_capability
+    _ensure_answer_in_reasoning_capability(agent)
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds
 

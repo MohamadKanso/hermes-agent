@@ -107,7 +107,10 @@ class TestFallbackReasoningOverride:
         assert result is True
         # reasoning_config should be restored to primary's value (medium)
         assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
-        assert agent.runtime_capabilities == {"native_compaction": True}
+        assert agent.runtime_capabilities == {
+            "native_compaction": True,
+            "answer_in_reasoning": False,
+        }
 
     def test_fallback_global_fallback_with_yaml_false(self):
         """Fallback global fallback must not coerce YAML boolean False.
