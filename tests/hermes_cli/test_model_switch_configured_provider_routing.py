@@ -21,7 +21,7 @@ Hermetic: the model-resolution chain is fully mocked (no network), mirroring
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import switch_model
+from hermes_cli.model_switch import _configured_provider_matches, switch_model
 
 _ACCEPTED = {"accepted": True, "persist": True, "recognized": True, "message": None}
 _REJECTED = {"accepted": False, "persist": False, "recognized": False, "message": "not found"}
@@ -122,3 +122,75 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+def test_modern_provider_compatibility_view_is_not_reported_as_ambiguous():
+    """the providers: row and its legacy view should resolve as one route."""
+    user_providers = {
+        "relay": {
+            "name": "Relay",
+            "base_url": "https://relay.example/v1/",
+            "key_env": "RELAY_API_KEY",
+            "api_mode": "openai",
+            "default_model": "claude-opus-4-7",
+        }
+    }
+    compatibility_view = [{
+        "provider_key": "relay",
+        "name": "Relay",
+        "base_url": "https://RELAY.example/v1",
+        "key_env": "RELAY_API_KEY",
+        "api_mode": "chat_completions",
+        "model": "claude-opus-4-7",
+    }]
+
+    assert _configured_provider_matches(
+        "claude-opus-4-7", user_providers, compatibility_view
+    ) == {"relay": "claude-opus-4-7"}
+
+    result = _run_switch(
+        raw_input="claude-opus-4-7",
+        current_provider="openrouter",
+        user_providers=user_providers,
+        custom_providers=compatibility_view,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay"
+
+
+def test_distinct_compatibility_candidates_stay_ambiguous():
+    """same model names must stay ambiguous when the route identity changes."""
+    user_providers = {
+        "relay": {
+            "name": "Relay",
+            "base_url": "https://relay.example/v1",
+            "key_env": "RELAY_API_KEY",
+            "api_mode": "chat_completions",
+            "default_model": "claude-opus-4-7",
+        }
+    }
+    base_compatibility_view = {
+        "name": "Relay",
+        "base_url": "https://relay.example/v1",
+        "key_env": "RELAY_API_KEY",
+        "api_mode": "chat_completions",
+        "model": "claude-opus-4-7",
+    }
+
+    for field, value in (
+        ("base_url", "https://another-relay.example/v1"),
+        ("key_env", "OTHER_RELAY_API_KEY"),
+        ("api_mode", "anthropic_messages"),
+    ):
+        compatibility_view = dict(base_compatibility_view, **{field: value})
+        matches = _configured_provider_matches(
+            "claude-opus-4-7", user_providers, [compatibility_view]
+        )
+        assert set(matches) == {"relay", "custom:Relay"}
+
+    matches = _configured_provider_matches(
+        "claude-opus-4-7",
+        user_providers,
+        [dict(base_compatibility_view, provider_key="relay-backup")],
+    )
+    assert set(matches) == {"relay", "custom:Relay"}

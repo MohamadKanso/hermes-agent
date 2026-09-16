@@ -853,20 +853,78 @@ def _configured_provider_matches(
         return {}
     target = model_name.strip().lower()
 
-    candidates: list[tuple[str, dict]] = []
+    candidates: list[tuple[str, dict, str, tuple]] = []
     if isinstance(user_providers, dict):
-        candidates += [(slug, cfg) for slug, cfg in user_providers.items()
-                       if isinstance(slug, str) and isinstance(cfg, dict)]
-    candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+        candidates += [
+            (slug, cfg, "providers", _configured_provider_identity(slug, cfg))
+            for slug, cfg in user_providers.items()
+            if isinstance(slug, str) and isinstance(cfg, dict)]
+    candidates += [
+        (f"custom:{e['name']}", e, "custom_providers", _configured_provider_identity(e["name"], e))
+        for e in _custom_entries(custom_providers)
+        if isinstance(e.get("name"), str) and e["name"].strip()]
 
-    matches: dict[str, str] = {}
-    for slug, cfg in candidates:
+    matched_candidates: list[tuple[str, dict, str, tuple, str]] = []
+    for slug, cfg, source, identity in candidates:
         hit = next((mid for key in ("models", "model", "default_model")
                     for mid in _declared_model_ids(cfg.get(key)) if mid.lower() == target), None)
         if hit:
-            matches.setdefault(slug, hit)  # first declaration wins
+            matched_candidates.append((slug, cfg, source, identity, hit))
+
+    matches: dict[str, str] = {}
+    provider_candidates = [candidate for candidate in matched_candidates if candidate[2] == "providers"]
+    for slug, cfg, source, identity, hit in matched_candidates:
+        # get_compatible_custom_providers() exposes providers: entries again in the legacy
+        # list. keep that compatibility view from turning one route into an ambiguity, but
+        # leave genuinely different endpoints, credentials, or transports alone.
+        if source == "custom_providers" and any(
+                identity == provider_identity
+                and (
+                    _clean(cfg.get("provider_key")).casefold()
+                    == _clean(provider_slug).casefold()
+                    or not _clean(cfg.get("provider_key"))
+                )
+                for provider_slug, _, _, provider_identity, _ in provider_candidates):
+            continue
+        matches.setdefault(slug, hit)  # first declaration wins
     return matches
+
+
+def _configured_provider_identity(slug: str, cfg: dict) -> tuple:
+    """return the non-secret route identity used to spot compatibility projections."""
+    from hermes_cli.config_providers import _canonical_api_mode
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    name = _clean(cfg.get("name")) or _clean(slug)
+    base_url = next((_clean(cfg.get(key)) for key in ("base_url", "url", "api")
+                     if _clean(cfg.get(key))), "")
+    api_mode = _clean(cfg.get("api_mode") or cfg.get("transport"))
+    headers = cfg.get("extra_headers")
+    header_identity = ()
+    if isinstance(headers, dict):
+        header_identity = tuple(sorted(
+            (str(key).strip().casefold(), str(value))
+            for key, value in headers.items()
+            if value is not None))
+    return (
+        name.casefold(),
+        normalize_route_base_url(base_url),
+        _configured_provider_auth_identity(cfg),
+        _canonical_api_mode(api_mode).casefold() if api_mode else "",
+        header_identity,
+    )
+
+
+def _configured_provider_auth_identity(cfg: dict) -> tuple[str, str]:
+    """return the credential pointer shape without resolving or logging its secret."""
+    key_cmd = _clean(cfg.get("key_cmd"))
+    if key_cmd:
+        return "key_cmd", key_cmd
+    api_key = _clean(cfg.get("api_key"))
+    if api_key:
+        return "api_key", api_key
+    key_env = _clean(cfg.get("key_env") or cfg.get("api_key_env"))
+    return "key_env", key_env
 
 
 def _resolve_named_custom_model_id(model_name: str, target_provider: str, custom_providers: Optional[list]) -> str:
