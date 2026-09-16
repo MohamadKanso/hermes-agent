@@ -823,9 +823,18 @@ class TestNativeScreenshots:
         monkeypatch.setattr(
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
         )
+        seen = {}
+
+        def fake_resize(path, **kwargs):
+            seen.update(kwargs)
+            return "data:image/png;base64,QUJD"
+
         monkeypatch.setattr(
             "tools.vision_tools._resize_image_for_vision",
-            lambda p, **kw: "data:image/png;base64,QUJD",
+            fake_resize,
+        )
+        monkeypatch.setattr(
+            "tools.vision_tools._resolve_embed_target_bytes", lambda: 512 * 1024
         )
         result = bu_cli.browser_exec("print(capture_screenshot())")
         assert isinstance(result, dict) and result["_multimodal"] is True
@@ -833,6 +842,7 @@ class TestNativeScreenshots:
         assert kinds == ["text", "image_url"]
         assert result["meta"]["screenshot_path"] == shot
         assert shot in result["text_summary"]
+        assert seen["max_base64_bytes"] == 512 * 1024
 
     def test_text_only_model_gets_plain_result_with_path(self, tmp_path, monkeypatch):
         shot = self._shot(tmp_path)

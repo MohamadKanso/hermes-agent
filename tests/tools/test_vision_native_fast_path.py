@@ -370,6 +370,63 @@ class TestVisionAnalyzeNative:
         assert _EMBED_MAX_DIMENSION <= 2048
 
 
+class TestVisionEmbedTargetConfig:
+    def test_default_config_exposes_the_history_budget(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from tools.vision_tools import _DEFAULT_EMBED_TARGET_BYTES
+
+        assert DEFAULT_CONFIG["vision"]["embed_target_bytes"] == _DEFAULT_EMBED_TARGET_BYTES
+
+    def test_invalid_and_out_of_range_values_are_safe(self, monkeypatch):
+        from tools import vision_tools
+
+        cases = (
+            (None, vision_tools._DEFAULT_EMBED_TARGET_BYTES),
+            ("not-a-number", vision_tools._DEFAULT_EMBED_TARGET_BYTES),
+            (True, vision_tools._DEFAULT_EMBED_TARGET_BYTES),
+            (1, vision_tools._MIN_EMBED_TARGET_BYTES),
+            (vision_tools._MAX_EMBED_TARGET_BYTES * 2, vision_tools._MAX_EMBED_TARGET_BYTES),
+            (512 * 1024, 512 * 1024),
+        )
+        for raw, expected in cases:
+            monkeypatch.setattr(
+                vision_tools, "_cfg_vision", lambda *keys, default=None, raw=raw: raw
+            )
+            assert vision_tools._resolve_embed_target_bytes() == expected
+
+    def test_native_path_passes_configured_budget_to_resizer(self, tmp_path, monkeypatch):
+        from tools import vision_tools
+
+        prepared_path = tmp_path / "prepared.png"
+        prepared_path.write_bytes(b"prepared")
+        prepared = vision_tools._PreparedImage(prepared_path, "image/png", 8, {})
+        seen = {}
+
+        async def fake_prepare(*args, **kwargs):
+            return prepared
+
+        async def fake_resize(_prepared, _scale_info, **kwargs):
+            seen.update(kwargs)
+            return "data:image/jpeg;base64,small"
+
+        monkeypatch.setattr(
+            vision_tools, "_cfg_vision", lambda *keys, default=None: 512 * 1024
+        )
+        monkeypatch.setattr(vision_tools, "_prepare_image", fake_prepare)
+        monkeypatch.setattr(
+            vision_tools, "_image_to_base64_data_url", lambda *args, **kwargs: "x" * (768 * 1024)
+        )
+        monkeypatch.setattr(vision_tools, "_image_exceeds_dimension", lambda *args: False)
+        monkeypatch.setattr(vision_tools, "_resize_prepared", fake_resize)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            vision_tools._vision_analyze_native(str(prepared_path), "describe")
+        )
+
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        assert seen["max_base64_bytes"] == 512 * 1024
+
+
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────
 
 

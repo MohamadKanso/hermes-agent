@@ -1160,6 +1160,12 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
+    "vision": {
+        # Native image results are sent again with later turns. Keep the default small, while
+        # allowing dense screenshots to opt into a larger history-reuse budget.
+        # Values are clamped to 64 KiB .. 4 MiB by the vision tool.
+        "embed_target_bytes": 256 * 1024,
+    },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
     "wake_word": {

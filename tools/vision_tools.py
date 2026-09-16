@@ -59,6 +59,15 @@ def _cfg_auxiliary(*keys: str, default=None):
         return default
 
 
+def _cfg_vision(*keys: str, default=None):
+    """Read ``vision.<keys...>`` from config.yaml, with a safe fallback."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        return cfg_get(load_config(), "vision", *keys, default=default)
+    except Exception:
+        return default
+
+
 def _read_vision_setting(env_var: str, key: str, cast, minimum=None):
     """Env var → ``auxiliary.vision.<key>`` → None. Values that fail ``cast`` or fall below
     ``minimum`` are skipped in favor of the next source (a cap can never be disabled by a bad value)."""
@@ -254,8 +263,12 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # limits, not history-reuse sizes. A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
 # tokens per image (#92699), so we size for model reading instead: 256 KB keeps a 1568px screenshot cheap
 # enough to ride the session (PNGs that exceed it are downscaled further by the byte-budget ladder), well
-# under every provider's per-image limit.
-_EMBED_TARGET_BYTES = 256 * 1024
+# under every provider's per-image limit. The target is configurable for dense screenshots, but
+# bounded so one setting cannot turn every later request into a multi-megabyte image resend.
+_DEFAULT_EMBED_TARGET_BYTES = 256 * 1024
+_MIN_EMBED_TARGET_BYTES = 64 * 1024
+_MAX_EMBED_TARGET_BYTES = 4 * 1024 * 1024
+_EMBED_TARGET_BYTES = _DEFAULT_EMBED_TARGET_BYTES
 _EMBED_MAX_DIMENSION = 1568
 
 # Target when auto-resizing after a provider size rejection (retry once).
@@ -265,6 +278,18 @@ _SIZE_ERROR_HINTS = (
     "too large", "payload", "413", "content_too_large",
     "request_too_large", "exceeds", "size limit",
 )
+
+
+def _resolve_embed_target_bytes() -> int:
+    """Return the configured native history budget, clamped to a useful safe range."""
+    try:
+        raw = _cfg_vision("embed_target_bytes", default=_DEFAULT_EMBED_TARGET_BYTES)
+        if isinstance(raw, bool):
+            raise ValueError("boolean is not a byte budget")
+        target = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return _DEFAULT_EMBED_TARGET_BYTES
+    return min(max(target, _MIN_EMBED_TARGET_BYTES), _MAX_EMBED_TARGET_BYTES)
 
 
 def _is_image_size_error(error: Exception) -> bool:
@@ -601,12 +626,13 @@ async def _vision_analyze_native(
         # Anthropic still rejects >5 MB / >8000px with a non-retryable 400, but those are one-shot viewing
         # limits — history embeds are sized smaller so repeated vision_analyze turns don't blow the context
         # (#92699).
+        embed_target_bytes = _resolve_embed_target_bytes()
         _over_dims = await _run_encode_on_cpu_executor(
             _image_exceeds_dimension, prepared.path, _EMBED_MAX_DIMENSION)
-        if len(image_data_url) > _EMBED_TARGET_BYTES or _over_dims:
+        if len(image_data_url) > embed_target_bytes or _over_dims:
             image_data_url = await _resize_prepared(
                 prepared, _scale_info,
-                max_base64_bytes=_EMBED_TARGET_BYTES, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+                max_base64_bytes=embed_target_bytes, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)

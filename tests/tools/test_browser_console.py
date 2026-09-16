@@ -222,6 +222,28 @@ class TestBrowserVisionAnnotate:
         assert props["annotate"]["type"] == "boolean"
 
 
+    def test_native_browser_embed_uses_configured_budget(self, tmp_path, monkeypatch):
+        from tools import browser_tool_vision, vision_tools
+
+        screenshot = tmp_path / "shot.png"
+        screenshot.write_bytes(b"screenshot")
+        seen = {}
+
+        def fake_resize(*args, **kwargs):
+            seen.update(kwargs)
+            return "data:image/jpeg;base64,small"
+
+        monkeypatch.setattr(vision_tools, "_resolve_embed_target_bytes", lambda: 512 * 1024)
+        monkeypatch.setattr(vision_tools, "_resize_image_for_vision", fake_resize)
+
+        result = browser_tool_vision._native_vision_result(
+            screenshot, "describe", False, {"data": {}}, None
+        )
+
+        assert result["_multimodal"] is True
+        assert seen["max_base64_bytes"] == 512 * 1024
+
+
     def test_annotate_true_adds_flag(self):
         """With annotate=True, screenshot command includes --annotate."""
         from tools.browser_tool import browser_vision
