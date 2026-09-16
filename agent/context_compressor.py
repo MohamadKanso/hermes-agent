@@ -1490,8 +1490,64 @@ def _sum_clarify(name, args, content, content_len, line_count):
     return "[clarify] asked user a question"
 
 
-def _sum_named(name, args, content, content_len, line_count):
-    return f"[{name}] name={args.get('name', '?')} ({content_len:,} chars)"
+def _short_summary_value(value: Any, default: str = "?", max_chars: int = 80) -> str:
+    """keep an argument or error readable and on one line."""
+    if value is None:
+        return default
+    text = value if isinstance(value, str) else str(value)
+    text = " ".join(text.split())
+    if not text:
+        return default
+    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+
+
+def _tool_result_status(content: Any) -> str:
+    """keep a structured tool failure visible after its result is compacted."""
+    result = _json_dict(content)
+    error = result.get("error")
+    status = _short_summary_value(result.get("status"), "").lower()
+    failed = result.get("success") is False or bool(error) or status in {
+        "error", "failed", "failure", "timeout", "rejected",
+    }
+    if failed:
+        if isinstance(error, str):
+            error = redact_sensitive_text(error, force=True, redact_url_credentials=True)
+        error = _short_summary_value(error, "", max_chars=160)
+        return f" -> failed: {error}" if error else " -> failed"
+    if result.get("success") is True or status in {"ok", "success", "succeeded"}:
+        return " -> ok"
+    return ""
+
+
+def _sum_skill_manage(name, args, content, content_len, line_count):
+    operations = args.get("operations")
+    if not isinstance(operations, list):
+        operations = [args] if args else []
+    labels = []
+    for operation in operations[:3]:
+        if not isinstance(operation, dict):
+            continue
+        action = _short_summary_value(operation.get("action"), "")
+        skill = _short_summary_value(operation.get("name"), "")
+        detail = " ".join(part for part in (action, skill) if part)
+        if detail:
+            labels.append(detail)
+    summary = "; ".join(labels) or "operations"
+    if len(operations) > len(labels):
+        summary += f"; +{len(operations) - len(labels)} more"
+    return (
+        f"[skill_manage] {summary} ({len(operations)} ops)"
+        f"{_tool_result_status(content)} ({content_len:,} chars)"
+    )
+
+
+def _sum_skills_list(name, args, content, content_len, line_count):
+    category = _short_summary_value(args.get("category"), "")
+    detail = f"category={category}" if category else "all"
+    payload = _json_dict(content)
+    count = payload.get("count")
+    count_detail = f" {count} skills" if isinstance(count, int) and not isinstance(count, bool) else ""
+    return f"[skills_list] {detail}{count_detail}{_tool_result_status(content)} ({content_len:,} chars)"
 
 
 def _sum_template(template: str, **defaults):
@@ -1517,8 +1573,8 @@ _TOOL_RESULT_SUMMARIZERS = {
     "delegate_task": _sum_delegate_task,
     "execute_code": _sum_execute_code,
     "skill_view": _sum_skill_view,
-    "skills_list": _sum_named,
-    "skill_manage": _sum_named,
+    "skills_list": _sum_skills_list,
+    "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
     ),

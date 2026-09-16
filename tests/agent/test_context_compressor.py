@@ -64,6 +64,104 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultSkillTools:
+    """keep compacted skill-tool results useful for the next model turn."""
+
+    def test_skill_manage_uses_nested_operation_names(self):
+        args = json.dumps({
+            "operations": [
+                {"action": "create", "name": "orca-ade"},
+                {"action": "patch", "name": "llama-server"},
+            ]
+        })
+        content = json.dumps({"success": True, "changed": 2})
+
+        summary = _summarize_tool_result("skill_manage", args, content)
+
+        assert summary.startswith("[skill_manage] create orca-ade; patch llama-server")
+        assert "name=?" not in summary
+        assert "(2 ops)" in summary
+        assert "-> ok" in summary
+
+    def test_skill_manage_keeps_failed_batch_visible(self):
+        args = json.dumps({
+            "operations": [{"action": "create", "name": "orca-ade"}]
+        })
+        content = json.dumps({
+            "success": False,
+            "error": "operations[0] failed: content is required for create",
+        })
+
+        summary = _summarize_tool_result("skill_manage", args, content)
+
+        assert summary.startswith("[skill_manage] create orca-ade")
+        assert "-> failed:" in summary
+        assert "content is required" in summary
+
+    def test_skill_manage_keeps_legacy_flat_shape(self):
+        args = json.dumps({"action": "delete", "name": "stale-skill"})
+        content = json.dumps({"success": True, "message": "deleted"})
+
+        summary = _summarize_tool_result("skill_manage", args, content)
+
+        assert summary.startswith("[skill_manage] delete stale-skill")
+        assert "-> ok" in summary
+
+    def test_skill_manage_keeps_empty_batch_shape(self):
+        args = json.dumps({"operations": []})
+
+        summary = _summarize_tool_result("skill_manage", args, '{"success": true}')
+
+        assert summary.startswith("[skill_manage] operations (0 ops)")
+
+    def test_skill_manage_bounds_failure_preview(self):
+        args = json.dumps({"operations": [{"action": "create", "name": "orca-ade"}]})
+        content = json.dumps({"success": False, "error": "line one\n" + "x" * 500})
+
+        summary = _summarize_tool_result("skill_manage", args, content)
+
+        assert "\n" not in summary
+        assert len(summary) < 300
+
+    def test_skills_list_keeps_filter_and_failure(self):
+        args = json.dumps({"category": "research"})
+        content = json.dumps({"success": False, "error": "skill directory unavailable"})
+
+        summary = _summarize_tool_result("skills_list", args, content)
+
+        assert summary.startswith("[skills_list] category=research")
+        assert "-> failed: skill directory unavailable" in summary
+
+    def test_skills_list_success_keeps_result_count(self):
+        args = json.dumps({"category": "research"})
+        content = json.dumps({"success": True, "count": 7, "skills": []})
+
+        summary = _summarize_tool_result("skills_list", args, content)
+
+        assert summary.startswith("[skills_list] category=research 7 skills")
+        assert "-> ok" in summary
+
+    def test_error_only_result_is_marked_and_kept_on_one_line(self):
+        args = json.dumps({"category": "research"})
+        content = json.dumps({"error": "skill directory unavailable\ntry again"})
+
+        summary = _summarize_tool_result("skills_list", args, content)
+
+        assert "-> failed: skill directory unavailable try again" in summary
+        assert "\n" not in summary
+
+    def test_failure_preview_is_redacted_and_bounded(self):
+        secret = "openai_key=xyzzyplugh1234567890abcd"
+        args = json.dumps({"operations": [{"action": "create", "name": "orca-ade"}]})
+        content = json.dumps({"success": False, "error": secret + "\n" + "x" * 500})
+
+        summary = _summarize_tool_result("skill_manage", args, content)
+
+        assert secret not in summary
+        assert "\n" not in summary
+        assert len(summary) < 350
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
         content = json.dumps({
