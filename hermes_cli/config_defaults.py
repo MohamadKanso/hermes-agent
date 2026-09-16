@@ -1160,6 +1160,11 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
+    "vision": {
+        # Native vision embeds are copied into conversation history and re-sent on later
+        # turns. Keep repeated loads bounded by default; set 0 to keep the old unlimited behavior.
+        "max_calls_per_image": 3,
+    },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
     "wake_word": {

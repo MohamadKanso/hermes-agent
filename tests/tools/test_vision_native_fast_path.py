@@ -14,6 +14,7 @@ import json
 from io import BytesIO
 from unittest.mock import patch
 
+import pytest
 
 from tools.vision_tools import (
     _build_native_vision_tool_result,
@@ -368,6 +369,145 @@ class TestVisionAnalyzeNative:
 
         assert _EMBED_TARGET_BYTES <= 512 * 1024
         assert _EMBED_MAX_DIMENSION <= 2048
+
+
+# ─── native fast-path per-image repeat guard (#112095) ───────────────────────
+
+
+def _clear_native_vision_guard_state():
+    from tools import vision_tools
+
+    with vision_tools._native_vision_loads_lock:
+        vision_tools._native_vision_loads.clear()
+
+
+class TestNativeVisionRepeatGuard:
+    """Keep repeated native embeds bounded without counting failed attempts."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_guard_state(self):
+        _clear_native_vision_guard_state()
+        yield
+        _clear_native_vision_guard_state()
+
+    def _load(self, image_url, question="describe"):
+        return asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(image_url, question)
+        )
+
+    def test_repeat_load_refused_after_default_cap(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        for _ in range(3):
+            result = self._load(str(img))
+            assert isinstance(result, dict) and result.get("_multimodal") is True
+
+        result = self._load(str(img))
+        assert isinstance(result, str)
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "already been loaded" in payload["error"]
+        assert "vision.max_calls_per_image" in payload["error"]
+
+    def test_zero_cap_keeps_repeats_unlimited(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.vision_tools._native_vision_repeat_cap", lambda: 0)
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        for _ in range(5):
+            result = self._load(str(img))
+            assert isinstance(result, dict) and result.get("_multimodal") is True
+
+    def test_failed_preparation_releases_reserved_slot(self, tmp_path, monkeypatch):
+        from tools import vision_tools
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+        real_prepare = vision_tools._prepare_image
+        failed = False
+
+        async def fail_once(*args, **kwargs):
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise vision_tools._ImagePrepError("temporary image failure")
+            return await real_prepare(*args, **kwargs)
+
+        monkeypatch.setattr(vision_tools, "_prepare_image", fail_once)
+        first = self._load(str(img))
+        assert isinstance(first, str)
+        assert json.loads(first)["success"] is False
+        assert isinstance(self._load(str(img)), dict)
+
+    def test_parallel_calls_cannot_pass_the_cap_together(self, tmp_path, monkeypatch):
+        from tools import vision_tools
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+        real_prepare = vision_tools._prepare_image
+        entered = 0
+        all_reserved = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_prepare(*args, **kwargs):
+            nonlocal entered
+            entered += 1
+            if entered == 3:
+                all_reserved.set()
+            await release.wait()
+            return await real_prepare(*args, **kwargs)
+
+        async def run_parallel():
+            monkeypatch.setattr(vision_tools, "_prepare_image", slow_prepare)
+            tasks = [
+                asyncio.create_task(_vision_analyze_native(str(img), "describe"))
+                for _ in range(4)
+            ]
+            await asyncio.wait_for(all_reserved.wait(), timeout=1)
+            with vision_tools._native_vision_loads_lock:
+                state = vision_tools._native_vision_loads[
+                    (vision_tools._native_vision_session_key(), vision_tools._native_vision_image_key(str(img)))
+                ]
+                assert state.reserved == 3
+            release.set()
+            return await asyncio.gather(*tasks)
+
+        results = asyncio.get_event_loop().run_until_complete(run_parallel())
+        assert sum(isinstance(result, dict) for result in results) == 3
+        assert sum(isinstance(result, str) for result in results) == 1
+
+    def test_sessions_have_independent_counts(self, tmp_path, monkeypatch):
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        monkeypatch.setattr("tools.vision_tools._native_vision_session_key", lambda: "session-a")
+        for _ in range(3):
+            assert isinstance(self._load(str(img)), dict)
+        assert isinstance(self._load(str(img)), str)
+
+        monkeypatch.setattr("tools.vision_tools._native_vision_session_key", lambda: "session-b")
+        assert isinstance(self._load(str(img)), dict)
+
+    def test_cap_reader_honors_config(self, monkeypatch):
+        from tools import vision_tools
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"vision": {"max_calls_per_image": 1}},
+        )
+        assert vision_tools._native_vision_repeat_cap() == 1
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"vision": {"max_calls_per_image": 0}},
+        )
+        assert vision_tools._native_vision_repeat_cap() == 0
+
+    def test_default_config_ships_a_bounded_cap(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["vision"]["max_calls_per_image"] == 3
 
 
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────

@@ -8,11 +8,13 @@ model (multimodal tool-result envelope) or are described by the auxiliary vision
 
 import base64
 import asyncio
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
@@ -577,6 +579,144 @@ async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs)
     )
 
 
+# A native vision result is copied into conversation history, so repeating the same image
+# can grow every later request without adding any new information. Keep the guard state in
+# memory and reserve a slot before the async image work starts, otherwise parallel calls can
+# all pass the check before any of them gets counted.
+_NATIVE_VISION_REPEAT_CAP_DEFAULT = 3
+_NATIVE_VISION_LOADS_MAX_KEYS = 4096
+
+
+class _NativeVisionLoadState(NamedTuple):
+    committed: int = 0
+    reserved: int = 0
+
+
+class _NativeVisionReservation(NamedTuple):
+    key: tuple
+
+
+_NATIVE_VISION_GUARD_DISABLED = object()
+_native_vision_loads: Dict[tuple, _NativeVisionLoadState] = {}
+_native_vision_loads_lock = threading.Lock()
+
+
+def _native_vision_session_key() -> str:
+    """Return the active session key used to scope native-image repeat limits."""
+    try:
+        from tools.approval import get_current_session_key
+
+        return get_current_session_key(default="") or ""
+    except Exception:
+        return ""
+
+
+def _native_vision_image_key(image_url: str) -> str:
+    """Return a bounded key for a local path, URL, or data URL.
+
+    Regions intentionally share the source key because both the full image and a crop are
+    embedded in history. Hashing data URLs avoids retaining the image bytes in the registry.
+    """
+    if image_url.startswith("data:"):
+        digest = hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
+        return f"data:{digest}"
+    stripped = image_url.split("#", 1)[0]
+    if stripped.startswith("file://"):
+        stripped = stripped[len("file://"):]
+    local_path = Path(os.path.expanduser(stripped))
+    if local_path.is_file():
+        return f"file:{local_path.resolve()}"
+    return f"url:{stripped}"
+
+
+def _native_vision_repeat_cap() -> int:
+    """Read ``vision.max_calls_per_image``; zero keeps the guard unlimited."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        raw = cfg_get(
+            load_config(), "vision", "max_calls_per_image",
+            default=_NATIVE_VISION_REPEAT_CAP_DEFAULT,
+        )
+        cap = int(raw) if raw is not None else _NATIVE_VISION_REPEAT_CAP_DEFAULT
+        return max(cap, 0)
+    except Exception:
+        return _NATIVE_VISION_REPEAT_CAP_DEFAULT
+
+
+def _native_vision_repeat_refusal(session_key: str, image_key: str) -> Optional[str]:
+    """Return a clear tool error when all slots for this image are already in use."""
+    cap = _native_vision_repeat_cap()
+    if cap <= 0:
+        return None
+    with _native_vision_loads_lock:
+        state = _native_vision_loads.get((session_key, image_key))
+        count = (state.committed + state.reserved) if state is not None else 0
+    if count < cap:
+        return None
+    return tool_error(
+        f"vision_analyze skipped: this image has already been loaded into "
+        f"context {state.committed if state is not None else count} time(s) in this session, "
+        f"with {state.reserved if state is not None else 0} load(s) still in progress. "
+        f"Native loads re-send the full image on later API calls, so answer from the "
+        f"existing pixels instead of loading it again. "
+        f"(vision.max_calls_per_image = {cap}; set 0 for unlimited)",
+        success=False,
+    )
+
+
+def _evict_native_vision_loads_locked() -> None:
+    """Drop old idle keys without evicting a reservation that another call owns."""
+    while len(_native_vision_loads) > _NATIVE_VISION_LOADS_MAX_KEYS:
+        idle_key = next(
+            (key for key, state in _native_vision_loads.items() if state.reserved == 0),
+            None,
+        )
+        if idle_key is None:
+            # Every retained key is active, so the bound is temporarily allowed to grow.
+            break
+        del _native_vision_loads[idle_key]
+
+
+def _reserve_native_vision_load(session_key: str, image_key: str) -> Any:
+    """Atomically reserve one successful-load slot, or return the refusal/disabled marker."""
+    cap = _native_vision_repeat_cap()
+    if cap <= 0:
+        return _NATIVE_VISION_GUARD_DISABLED
+    key = (session_key, image_key)
+    with _native_vision_loads_lock:
+        state = _native_vision_loads.get(key, _NativeVisionLoadState())
+        if state.committed + state.reserved >= cap:
+            return None
+        _native_vision_loads[key] = state._replace(reserved=state.reserved + 1)
+        _evict_native_vision_loads_locked()
+    return _NativeVisionReservation(key)
+
+
+def _commit_native_vision_load(reservation: _NativeVisionReservation) -> None:
+    """Turn an in-flight reservation into a counted native embed."""
+    with _native_vision_loads_lock:
+        state = _native_vision_loads.get(reservation.key)
+        if state is None or state.reserved == 0:
+            return
+        _native_vision_loads[reservation.key] = _NativeVisionLoadState(
+            committed=state.committed + 1, reserved=state.reserved - 1)
+
+
+def _release_native_vision_load(reservation: _NativeVisionReservation) -> None:
+    """Return a reservation after a failed or interrupted load."""
+    with _native_vision_loads_lock:
+        state = _native_vision_loads.get(reservation.key)
+        if state is None or state.reserved == 0:
+            return
+        updated = _NativeVisionLoadState(
+            committed=state.committed, reserved=state.reserved - 1)
+        if updated.committed == 0 and updated.reserved == 0:
+            _native_vision_loads.pop(reservation.key, None)
+        else:
+            _native_vision_loads[reservation.key] = updated
+
+
 async def _vision_analyze_native(
     image_url: str, question: str, task_id: Optional[str] = None, region: Optional[list] = None,
 ) -> Any:
@@ -584,6 +724,18 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    session_key = _native_vision_session_key()
+    image_key = _native_vision_image_key(image_url)
+    reservation = _reserve_native_vision_load(session_key, image_key)
+    if reservation is None:
+        refusal = _native_vision_repeat_refusal(session_key, image_key)
+        return refusal or tool_error(
+            "vision_analyze skipped: the per-image repeat limit was reached; "
+            "answer from the existing image context instead.",
+            success=False,
+        )
+    guard_enabled = reservation is not _NATIVE_VISION_GUARD_DISABLED
+    committed = False
     prepared: Optional[_PreparedImage] = None
     try:
         from tools.interrupt import is_interrupted
@@ -610,14 +762,20 @@ async def _vision_analyze_native(
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
-        return _build_native_vision_tool_result(
+        result = _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,
             scale_note=_build_scale_note(_scale_info or None, prepared.crop_offset or None))
+        if guard_enabled:
+            _commit_native_vision_load(reservation)
+            committed = True
+        return result
     except Exception as exc:
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
     finally:
+        if guard_enabled and not committed:
+            _release_native_vision_load(reservation)
         # Only delete temp files we created — never user-provided paths.
         if prepared is not None:
             _unlink_quietly(prepared.path)
