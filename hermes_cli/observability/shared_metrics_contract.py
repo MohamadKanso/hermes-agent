@@ -67,7 +67,8 @@ COMPUTER_USE_ACTIONS = frozenset({
 })
 COMPUTER_USE_PHASES = frozenset({
     "admission", "approval_wait", "backend_resolve", "backend_start", "dispatch_lock_wait", "input",
-    "capture", "backend_call", "capture_persist", "element_processing", "aux_vision", "response_shape", "total",
+    "capture", "backend_call", "backend_rebind", "capture_persist", "element_processing", "aux_vision",
+    "response_shape", "total",
 })
 COMPUTER_USE_OUTCOMES = frozenset({"blocked", "failed", "success", "unavailable", "unknown"})
 COMPUTER_USE_BACKENDS = frozenset({"cua", "noop", "other", "unknown"})

@@ -47,6 +47,10 @@ def test_computer_use_phase_fields_are_bounded_and_content_free() -> None:
     assert "private" not in str(fields)
 
 
+def test_computer_use_phase_fields_keep_backend_rebind_phase() -> None:
+    assert computer_use_phase_fields({"phase": "backend_rebind"})["phase"] == "backend_rebind"
+
+
 def test_computer_use_phase_fields_reject_unbounded_values() -> None:
     fields = computer_use_phase_fields(
         {
