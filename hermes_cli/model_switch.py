@@ -6,6 +6,7 @@ exclusively; colons are reserved for OpenRouter variant suffixes (``:free``, ``:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -891,7 +892,7 @@ def _configured_provider_matches(
 
 
 def _configured_provider_identity(slug: str, cfg: dict) -> tuple:
-    """return the non-secret route identity used to spot compatibility projections."""
+    """return the route identity used to spot compatibility projections."""
     from hermes_cli.config_providers import _canonical_api_mode
     from hermes_cli.route_identity import normalize_route_base_url
 
@@ -916,13 +917,14 @@ def _configured_provider_identity(slug: str, cfg: dict) -> tuple:
 
 
 def _configured_provider_auth_identity(cfg: dict) -> tuple[str, str]:
-    """return the credential pointer shape without resolving or logging its secret."""
+    """return the credential source without resolving or retaining a literal key."""
     key_cmd = _clean(cfg.get("key_cmd"))
     if key_cmd:
         return "key_cmd", key_cmd
     api_key = _clean(cfg.get("api_key"))
     if api_key:
-        return "api_key", api_key
+        digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        return "api_key", digest
     key_env = _clean(cfg.get("key_env") or cfg.get("api_key_env"))
     return "key_env", key_env
 
