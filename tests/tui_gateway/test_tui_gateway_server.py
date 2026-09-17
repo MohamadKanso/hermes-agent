@@ -11683,6 +11683,58 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
     assert resp["result"]["skill_count"] == len(skills)
 
 
+def test_commands_catalog_resolves_project_skills_from_session_cwd(tmp_path, monkeypatch):
+    """#114359: commands.catalog resolves project-local skills for the session's cwd
+    even when scope TERMINAL_CWD is $HOME (default placeholder)."""
+    repo = tmp_path / "proj_repo"
+    (repo / ".git").mkdir(parents=True)
+    skill_dir = repo / ".hermes" / "skills" / "my-proj-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-proj-skill\ndescription: A project skill\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    home = tmp_path / "home"
+    (home / "skills").mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs:\n    - {repo}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(Path.home()))
+
+    import agent.skill_utils as su
+    su._external_dirs_cache_clear()
+
+    sid = "sess-proj-test"
+    server._sessions[sid] = {
+        "session_id": sid,
+        "session_key": sid,
+        "cwd": str(repo),
+        "profile_home": str(home),
+    }
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "commands.catalog", "params": {"session_id": sid}}
+        )
+        assert resp.get("error") is None
+        pairs = dict(resp["result"]["pairs"])
+        assert "/my-proj-skill" in pairs
+        assert resp["result"]["skills"]["/my-proj-skill"]["origin"] == "local"
+
+        # Also verify command.dispatch reaches the project skill under that session
+        disp = server.handle_request(
+            {"id": "2", "method": "command.dispatch", "params": {"name": "my-proj-skill", "session_id": sid}}
+        )
+        assert disp.get("error") is None
+        assert disp["result"]["type"] == "skill"
+        assert disp["result"]["name"] == "my-proj-skill"
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
     """A broken/absent .usage.json degrades to no ranking, never a broken menu."""
     monkeypatch.setattr(

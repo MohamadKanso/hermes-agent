@@ -433,28 +433,33 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
     (skills' message wins, then quick commands', then plugins')."""
-    cat = _Catalog()
-    _catalog_registry(cat)
-    warning = ""
-    try:
-        _catalog_quick_commands(cat)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
-    skills: dict[str, dict] = {}
-    try:
-        _catalog_skills(cat, skills)
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
-    return _ok(rid, {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
-        "canon": cat.canon,
-        "commands": cat.commands,
-        "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
-        "skills": skills, "skill_count": len(skills), "warning": warning})
+    session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("profile"):
+        with contextlib.suppress(Exception):
+            session = {"profile_home": str(_profile_home(params.get("profile")))}
+    with _session_home_scope(session):
+        cat = _Catalog()
+        _catalog_registry(cat)
+        warning = ""
+        try:
+            _catalog_quick_commands(cat)
+        except Exception as e:
+            warning = f"quick_commands discovery unavailable: {e}"
+        try:
+            _catalog_plugin_commands(cat)
+        except Exception as e:
+            warning = warning or f"plugin command discovery unavailable: {e}"
+        skills: dict[str, dict] = {}
+        try:
+            _catalog_skills(cat, skills)
+        except Exception as e:
+            warning = f"skill discovery unavailable: {e}"
+        return _ok(rid, {
+            "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
+            "canon": cat.canon,
+            "commands": cat.commands,
+            "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
+            "skills": skills, "skill_count": len(skills), "warning": warning})
 
 
 @method("cli.exec")
@@ -517,19 +522,26 @@ def _run_plugin_command(handler, arg: str) -> str:
 
 @contextlib.contextmanager
 def _session_home_scope(session):
-    """Bind HERMES_HOME to the session's profile for the block (no-op for the launch profile).
+    """Bind HERMES_HOME and session cwd for the block (no-op when unset).
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
     ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
-    binds it, so an unscoped call resolves against the launch profile (#110695)."""
+    binds it, so an unscoped call resolves against the launch profile (#110695).
+    Binding session cwd ensures skill discovery and dispatch resolve project-local skills
+    for the active session's workspace (#114359)."""
     hc = _tools_mod("hermes_constants")
+    rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
-    token = hc.set_hermes_home_override(profile_home) if profile_home else None
+    sess_cwd = session.get("cwd") if session else None
+    home_token = hc.set_hermes_home_override(profile_home) if profile_home else None
+    cwd_token = rc.set_session_cwd(sess_cwd) if sess_cwd else None
     try:
         yield
     finally:
-        if token is not None:
-            hc.reset_hermes_home_override(token)
+        if home_token is not None:
+            hc.reset_hermes_home_override(home_token)
+        if cwd_token is not None:
+            rc.reset_session_cwd(cwd_token)
 
 
 def _is_profile_skill_command(session: dict, base: str) -> bool:

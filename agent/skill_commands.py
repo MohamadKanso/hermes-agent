@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 _skill_commands_home: Optional[str] = None
-# Guards the (map, platform-tag, home-tag) triple so publication and the
+_skill_commands_project_root: Optional[str] = None
+# Guards the (map, platform-tag, home-tag, project-root-tag) tuple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
@@ -150,6 +151,18 @@ def _resolve_skill_commands_home() -> str:
     """
     from hermes_constants import get_hermes_home
     return str(get_hermes_home())
+
+
+def _resolve_skill_commands_project_root() -> Optional[str]:
+    """The active project root for cache-invalidation purposes. When the project
+    root changes (e.g. session workspace change, or switching between repos),
+    ``get_skill_commands()`` must rescan rather than serving stale project skills (#114359)."""
+    try:
+        from agent.skill_utils import find_project_root
+        root = find_project_root()
+        return str(root.resolve()) if root else None
+    except Exception:
+        return None
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -368,9 +381,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    global _skill_commands, _skill_commands_platform, _skill_commands_home
+    global _skill_commands, _skill_commands_platform, _skill_commands_home, _skill_commands_project_root
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
+    project_root = _resolve_skill_commands_project_root()
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
@@ -413,6 +427,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         _skill_commands = commands
         _skill_commands_platform = platform
         _skill_commands_home = home
+        _skill_commands_project_root = project_root
     return commands
 
 
@@ -426,9 +441,14 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """
     current_platform = _resolve_skill_commands_platform()
     current_home = _resolve_skill_commands_home()
+    current_project_root = _resolve_skill_commands_project_root()
     with _publish_lock:
         commands = _skill_commands
-        is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home) == (current_platform, current_home)
+        is_fresh = bool(commands) and (
+            _skill_commands_platform,
+            _skill_commands_home,
+            _skill_commands_project_root,
+        ) == (current_platform, current_home, current_project_root)
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
     return commands if is_fresh else scan_skill_commands()

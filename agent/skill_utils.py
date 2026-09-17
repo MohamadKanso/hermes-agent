@@ -422,17 +422,33 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
     cron/API surfaces inherit an interactive trust decision by project identity.
 
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    When *start* is not given, resolution prioritizes:
+    1. The session-bound working directory (_SESSION_CWD) if set.
+    2. The surface's working directory (TERMINAL_CWD), provided it is not the
+       home-directory fallback placeholder ($HOME).
+    3. The process working directory (Path.cwd()).
+    This preserves cron/API trust inheritance (#48975) while ensuring TUI/desktop
+    and multi-session workspaces correctly resolve project-local skills when
+    terminal.cwd is left at the default placeholder (#114359).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import _SESSION_CWD, _UNSET, scope_terminal_cwd
+            sess_cwd = _SESSION_CWD.get()
+            sess_cwd = "" if sess_cwd is _UNSET else str(sess_cwd).strip()
+            if sess_cwd:
+                start = Path(sess_cwd)
+            else:
+                env_cwd = scope_terminal_cwd().strip()
+                home = Path.home().resolve()
+                try:
+                    is_home = Path(env_cwd).expanduser().resolve() == home if env_cwd else False
+                except OSError:
+                    is_home = False
+                if env_cwd and not is_home:
+                    start = Path(env_cwd)
+                else:
+                    start = Path.cwd()
         cur = Path(start).resolve()
     except OSError:
         return None

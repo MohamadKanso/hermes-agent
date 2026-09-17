@@ -161,6 +161,51 @@ class TestNonInteractiveInheritance:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert su.find_project_root(start=project_env["repo"]) == project_env["repo"].resolve()
 
+    def test_terminal_cwd_placeholder_home_falls_back_to_process_cwd(self, project_env, monkeypatch):
+        # In TUI/desktop, terminal.cwd default '.' resolves scope TERMINAL_CWD to $HOME (#114359).
+        # When process cwd is inside a trusted repo, find_project_root() must fall back to Path.cwd()
+        # rather than returning None because $HOME is non-project.
+        from agent.runtime_cwd import clear_session_cwd
+        clear_session_cwd()
+        monkeypatch.setenv("TERMINAL_CWD", str(Path.home()))
+        monkeypatch.chdir(project_env["repo"])
+        _trust(project_env["config"], project_env["repo"])
+        assert su.find_project_root() == project_env["repo"].resolve()
+        assert su.get_project_skills_dirs() != []
+
+    def test_session_cwd_takes_precedence_over_scope_terminal_cwd(self, project_env, monkeypatch, tmp_path):
+        # Multi-session gateway / TUI session binds session cwd, which must override
+        # TERMINAL_CWD even when scope points to $HOME or another directory (#114359).
+        from agent.runtime_cwd import clear_session_cwd, reset_session_cwd, set_session_cwd
+        other_repo = tmp_path / "other_repo"
+        (other_repo / ".git").mkdir(parents=True)
+        (other_repo / ".hermes" / "skills" / "other-skill").mkdir(parents=True)
+        (other_repo / ".hermes" / "skills" / "other-skill" / "SKILL.md").write_text(
+            "---\nname: other-skill\ndescription: other\n---\nbody\n"
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(Path.home()))
+        _trust(project_env["config"], other_repo)
+
+        token = set_session_cwd(str(other_repo))
+        try:
+            assert su.find_project_root() == other_repo.resolve()
+            assert su.get_project_skills_dirs() != []
+        finally:
+            reset_session_cwd(token)
+
+    def test_terminal_cwd_placeholder_home_outside_repo_returns_none(self, project_env, monkeypatch, tmp_path):
+        # When process cwd is outside any repo and TERMINAL_CWD is $HOME placeholder,
+        # find_project_root() correctly returns None.
+        from agent.runtime_cwd import clear_session_cwd
+        clear_session_cwd()
+        outside = tmp_path / "outside_plain"
+        outside.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(Path.home()))
+        monkeypatch.chdir(outside)
+        _trust(project_env["config"], project_env["repo"])
+        assert su.find_project_root() is None
+        assert su.get_project_skills_dirs() == []
+
 
 class TestQuarantine:
     """#48974: dangerous scan verdict excludes a project skill everywhere."""

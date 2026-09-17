@@ -290,6 +290,54 @@ class TestScanSkillCommands:
                 reset_hermes_home_override(token)
         assert msg is not None and "Body of b-only." in msg
 
+    def test_get_skill_commands_rescans_when_project_root_changes(self, tmp_path, monkeypatch):
+        """Switching session cwd / project root must rescan (#114359).
+        When the active project root changes, get_skill_commands() must invalidate
+        the cache and discover the new project's skills rather than serving the old view.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+        from agent.skill_commands import get_skill_commands
+        import agent.skill_utils as su
+
+        repo_a = tmp_path / "repo_a"
+        repo_b = tmp_path / "repo_b"
+        (repo_a / ".git").mkdir(parents=True)
+        (repo_b / ".git").mkdir(parents=True)
+        _make_skill(repo_a / ".hermes" / "skills", "proj-a-skill")
+        _make_skill(repo_b / ".hermes" / "skills", "proj-b-skill")
+
+        home = tmp_path / "home"
+        (home / "skills").mkdir(parents=True)
+        (home / "config.yaml").write_text(
+            f"skills:\n  trusted_project_dirs:\n    - {repo_a}\n    - {repo_b}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        su._external_dirs_cache_clear()
+
+        with (
+            patch("agent.skill_utils.get_skills_dir", return_value=home / "skills"),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_project_root", None),
+        ):
+            token = set_session_cwd(str(repo_a))
+            try:
+                cmds_a = dict(get_skill_commands())
+                assert "/proj-a-skill" in cmds_a
+                assert "/proj-b-skill" not in cmds_a
+            finally:
+                reset_session_cwd(token)
+
+            token = set_session_cwd(str(repo_b))
+            try:
+                cmds_b = dict(get_skill_commands())
+                assert "/proj-b-skill" in cmds_b
+                assert "/proj-a-skill" not in cmds_b
+            finally:
+                reset_session_cwd(token)
+
     def test_get_skill_commands_rescans_when_leaving_platform_scope(self, tmp_path, monkeypatch):
         """Returning to no-platform-scope (CLI / cron / RL) after a gateway
         session must rescan so the unfiltered view is repopulated (#14536).
