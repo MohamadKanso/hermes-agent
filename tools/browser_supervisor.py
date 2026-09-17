@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MAX_RECONNECT_SECONDS = 300.0
+_MAX_RECONNECT_BACKOFF_SECONDS = 10.0
+
 
 def _redact_cdp_error_text(exc: object) -> str:
     """Redact CDP endpoint credentials from an exception's (or URL's) string form.
@@ -85,6 +88,15 @@ class SupervisorSnapshot:
         if self.recent_dialogs:
             out["recent_dialogs"] = [d.to_dict() for d in self.recent_dialogs]
         return out
+
+
+@dataclass
+class _SupervisorStart:
+    """State shared by callers waiting for one supervisor start to finish."""
+
+    done: threading.Event
+    cancelled: bool = False
+    generation: int = 0
 
 
 class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
@@ -350,22 +362,48 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
-        A failure before the first successful attach is fatal for ``start()``."""
-        attempt, last_success_at, backoff = 0, 0.0, 0.5
+        A failure before the first successful attach is fatal for ``start()``. Once a
+        supervisor has attached, reconnects are bounded so a finished browser session
+        cannot leave a daemon thread retrying a dead endpoint forever."""
+        reconnect_attempts, last_attach_at, backoff = 0, None, 0.5
+
+        def _reconnect_age() -> Optional[float]:
+            if last_attach_at is None:
+                return None
+            return time.monotonic() - last_attach_at
+
+        def _stop_if_reconnect_expired() -> bool:
+            reconnect_age = _reconnect_age()
+            if reconnect_age is None or reconnect_age < _MAX_RECONNECT_SECONDS:
+                return False
+            self._stop_requested = True
+            logger.warning(
+                "CDP supervisor %s stopping after %.0fs without a successful reconnect; "
+                "a future browser request can start a fresh supervisor",
+                self.task_id, reconnect_age,
+            )
+            return True
+
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
         while not self._stop_requested:
+            if _stop_if_reconnect_expired():
+                return
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
             except Exception as e:
-                attempt += 1
                 if self._fail_start(e):
                     return
-                logger.warning("CDP supervisor %s: connect failed (attempt %s): %s",
-                               self.task_id, attempt, _redact_cdp_error_text(e))
-                await asyncio.sleep(min(backoff, 10.0))
-                backoff = min(backoff * 2, 10.0)
+                reconnect_attempts += 1
+                reconnect_age = _reconnect_age() or 0.0
+                if _stop_if_reconnect_expired():
+                    return
+                logger.warning("CDP supervisor %s: connect failed (attempt %d, %.0fs since last attach): %s",
+                               self.task_id, reconnect_attempts, reconnect_age,
+                               _redact_cdp_error_text(e))
+                await asyncio.sleep(min(backoff, _MAX_RECONNECT_BACKOFF_SECONDS))
+                backoff = min(backoff * 2, _MAX_RECONNECT_BACKOFF_SECONDS)
                 continue
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
@@ -375,8 +413,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 # stale dialog entry is rejected with "no dialog is showing", logged only).
                 self._page_session_id = None
                 await self._attach_initial_page()
+                if _stop_if_reconnect_expired():
+                    return
                 self._set_active(True)
-                last_success_at = time.time()
+                last_attach_at = time.monotonic()
+                reconnect_attempts = 0
                 backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
                 await reader_task
@@ -384,7 +425,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 if self._fail_start(e):
                     raise
                 logger.warning("CDP supervisor %s: session dropped after %.1fs: %s",
-                               self.task_id, time.time() - last_success_at, _redact_cdp_error_text(e))
+                               self.task_id,
+                               time.monotonic() - last_attach_at if last_attach_at is not None else 0.0,
+                               _redact_cdp_error_text(e))
             finally:
                 self._set_active(False)
                 if not reader_task.done():
@@ -398,9 +441,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
             if self._stop_requested:
                 return
-            logger.debug("CDP supervisor %s: reconnecting in %.1fs...", self.task_id, backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 10.0)
+            if _stop_if_reconnect_expired():
+                return
+            logger.debug("CDP supervisor %s: reconnecting (attempt %d) in %.1fs...",
+                         self.task_id, reconnect_attempts + 1, backoff)
+            await asyncio.sleep(min(backoff, _MAX_RECONNECT_BACKOFF_SECONDS))
+            backoff = min(backoff * 2, _MAX_RECONNECT_BACKOFF_SECONDS)
 
     async def _attach_initial_page(self) -> None:
         """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
@@ -469,10 +515,29 @@ class _SupervisorRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: Dict[str, CDPSupervisor] = {}
+        self._starting: Dict[str, _SupervisorStart] = {}
+        self._generation: Dict[str, int] = {}
+
+    @staticmethod
+    def _is_healthy(supervisor: CDPSupervisor) -> bool:
+        thread = getattr(supervisor, "_thread", None)
+        loop = getattr(supervisor, "_loop", None)
+        return (
+            not getattr(supervisor, "_stop_requested", False)
+            and thread is not None
+            and thread.is_alive()
+            and loop is not None
+            and loop.is_running()
+        )
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.get(task_id)
+            supervisor = self._by_task.get(task_id)
+            if supervisor is None or self._is_healthy(supervisor):
+                return supervisor
+            if self._by_task.get(task_id) is supervisor:
+                self._by_task.pop(task_id, None)
+            return None
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
@@ -482,31 +547,108 @@ class _SupervisorRegistry:
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
-        with self._lock:
-            existing = self._by_task.get(task_id)
-            if existing is not None:
-                thread, loop = existing._thread, existing._loop
-                healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
-                if existing.cdp_url == cdp_url and healthy:
+        expected_generation: Optional[int] = None
+        while True:
+            existing: Optional[CDPSupervisor] = None
+            wait_for: Optional[_SupervisorStart] = None
+            with self._lock:
+                current_generation = self._generation.get(task_id, 0)
+                if expected_generation is not None and current_generation != expected_generation:
+                    raise RuntimeError(f"supervisor start cancelled for task {task_id}")
+                existing = self._by_task.get(task_id)
+                if existing is not None and existing.cdp_url == cdp_url and self._is_healthy(existing):
                     return existing
-                self._by_task.pop(task_id, None)
+                wait_for = self._starting.get(task_id)
+                if wait_for is None:
+                    if existing is not None:
+                        self._by_task.pop(task_id, None)
+                    start_state = _SupervisorStart(
+                        threading.Event(), generation=self._generation.get(task_id, 0)
+                    )
+                    self._starting[task_id] = start_state
+            if wait_for is None:
+                break
+            completed = wait_for.done.wait(timeout=start_timeout)
+            if not completed:
+                with self._lock:
+                    if self._starting.get(task_id) is wait_for:
+                        wait_for.cancelled = True
+                        self._starting.pop(task_id, None)
+                        self._generation[task_id] = self._generation.get(task_id, 0) + 1
+                        expected_generation = self._generation[task_id]
+                        wait_for.done.set()
+                        continue
+            with self._lock:
+                cancelled = (
+                    wait_for.cancelled
+                    or self._generation.get(task_id, 0) != wait_for.generation
+                )
+                if not cancelled:
+                    expected_generation = wait_for.generation
+            if cancelled:
+                raise RuntimeError(f"supervisor start cancelled for task {task_id}")
+            # The current starter either completed, failed, or was cancelled. Recheck
+            # the registry so concurrent callers share its result instead of racing it.
         if existing is not None:
             existing.stop()
 
-        supervisor = CDPSupervisor(task_id=task_id, cdp_url=cdp_url,
-                                   dialog_policy=dialog_policy, dialog_timeout_s=dialog_timeout_s)
-        supervisor.start(timeout=start_timeout)
+        try:
+            supervisor = CDPSupervisor(task_id=task_id, cdp_url=cdp_url,
+                                       dialog_policy=dialog_policy, dialog_timeout_s=dialog_timeout_s)
+            supervisor.start(timeout=start_timeout)
+        except BaseException:
+            with self._lock:
+                if (
+                    self._starting.get(task_id) is start_state
+                    and self._generation.get(task_id, 0) == start_state.generation
+                ):
+                    self._starting.pop(task_id, None)
+                    start_state.done.set()
+            raise
+        winner: Optional[CDPSupervisor] = None
+        stale_already: Optional[CDPSupervisor] = None
+        cancelled = False
         with self._lock:
+            if (
+                self._starting.get(task_id) is not start_state
+                or self._generation.get(task_id, 0) != start_state.generation
+            ):
+                cancelled = True
+            else:
+                self._starting.pop(task_id, None)
+                start_state.done.set()
             # Guard against a concurrent get_or_start from another thread.
-            already = self._by_task.get(task_id)
-            if already is not None and already.cdp_url == cdp_url:
-                supervisor.stop()
-                return already
-            self._by_task[task_id] = supervisor
+            if not cancelled:
+                already = self._by_task.get(task_id)
+                if already is not None and already.cdp_url == cdp_url and self._is_healthy(already):
+                    winner = already
+                else:
+                    if already is not None:
+                        self._by_task.pop(task_id, None)
+                        stale_already = already
+                    self._by_task[task_id] = supervisor
+        if cancelled:
+            supervisor.stop()
+            with self._lock:
+                already = self._by_task.get(task_id)
+                if already is not None and already.cdp_url == cdp_url and self._is_healthy(already):
+                    return already
+            return supervisor
+        if winner is not None:
+            supervisor.stop()
+            return winner
+        if stale_already is not None:
+            stale_already.stop()
         return supervisor
 
     def stop(self, task_id: str) -> None:
-        supervisor = self._pop(task_id)
+        with self._lock:
+            start_state = self._starting.pop(task_id, None)
+            supervisor = self._by_task.pop(task_id, None)
+            self._generation[task_id] = self._generation.get(task_id, 0) + 1
+            if start_state is not None:
+                start_state.cancelled = True
+                start_state.done.set()
         if supervisor is not None:
             supervisor.stop()
 
@@ -514,7 +656,15 @@ class _SupervisorRegistry:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
             items = list(self._by_task.values())
+            starts = list(self._starting.values())
+            task_ids = set(self._by_task) | set(self._starting)
             self._by_task.clear()
+            self._starting.clear()
+            for task_id in task_ids:
+                self._generation[task_id] = self._generation.get(task_id, 0) + 1
+            for start_state in starts:
+                start_state.cancelled = True
+                start_state.done.set()
         for supervisor in items:
             supervisor.stop()
 
