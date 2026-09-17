@@ -1021,6 +1021,142 @@ class TestBedrockContextLength:
             mock_probe.assert_not_called()
 
 
+class TestBedrockInferenceProfileContextLength:
+    """Regression tests for #114476 — application inference profile ARNs
+    must resolve to their underlying foundation model context length."""
+
+    def test_application_inference_profile_resolves_claude_1m_window(self):
+        from agent.bedrock_adapter import (
+            get_bedrock_context_length,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.return_value = {
+            "inferenceProfileId": "abcdef123456",
+            "models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control) as mock_get_client, \
+             patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None) as mock_probe:
+            ctx = get_bedrock_context_length(arn, region="us-west-2")
+            assert ctx == 1_000_000
+            mock_get_client.assert_called_with("us-west-2")
+            mock_control.get_inference_profile.assert_called_with(inferenceProfileIdentifier=arn)
+            # Must probe the configured invocable ARN, not the underlying model ID
+            mock_probe.assert_called_once_with(arn, "us-west-2")
+
+    def test_application_inference_profile_probe_result_wins_over_table(self):
+        from agent.bedrock_adapter import (
+            get_bedrock_context_length,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/custom-limit"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.return_value = {
+            "models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet"}],
+        }
+
+        # Table says 200k, but probe returns 500k
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control), \
+             patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=500_000) as mock_probe:
+            ctx = get_bedrock_context_length(arn, region="us-west-2")
+            assert ctx == 500_000
+            mock_probe.assert_called_once_with(arn, "us-west-2")
+
+    def test_application_inference_profile_infers_region_from_arn(self):
+        from agent.bedrock_adapter import get_bedrock_context_length, reset_client_cache
+        reset_client_cache()
+        arn = "arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/xyz987"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.return_value = {
+            "models": [{"modelArn": "arn:aws:bedrock:eu-central-1::foundation-model/amazon.nova-pro"}],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control) as mock_get_client, \
+             patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
+            # Note: region argument omitted — must be inferred from the ARN
+            ctx = get_bedrock_context_length(arn)
+            assert ctx == 300_000
+            mock_get_client.assert_called_with("eu-central-1")
+
+    def test_application_inference_profile_permission_denied_falls_back_to_default_with_warning(self, caplog):
+        import logging
+        from agent.bedrock_adapter import (
+            get_bedrock_context_length,
+            reset_client_cache,
+            BEDROCK_DEFAULT_CONTEXT_LENGTH,
+        )
+        reset_client_cache()
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/unauthorized"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.side_effect = Exception("AccessDeniedException: not authorized")
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control), \
+             patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
+            with caplog.at_level(logging.WARNING):
+                ctx = get_bedrock_context_length(arn, region="us-west-2")
+            assert ctx == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert any("could not be resolved" in rec.message for rec in caplog.records)
+
+    def test_application_inference_profile_caching(self):
+        from agent.bedrock_adapter import get_bedrock_context_length, reset_client_cache
+        reset_client_cache()
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/cachetest"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.return_value = {
+            "models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-4-6"}],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control), \
+             patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
+            ctx1 = get_bedrock_context_length(arn, region="us-west-2")
+            ctx2 = get_bedrock_context_length(arn, region="us-west-2")
+            assert ctx1 == 1_000_000
+            assert ctx2 == 1_000_000
+            assert mock_control.get_inference_profile.call_count == 1
+
+            reset_client_cache()
+            ctx3 = get_bedrock_context_length(arn, region="us-west-2")
+            assert ctx3 == 1_000_000
+            assert mock_control.get_inference_profile.call_count == 2
+
+    def test_application_inference_profile_prompt_cache_and_tool_support(self):
+        from agent.bedrock_adapter import (
+            _model_supports_prompt_cache,
+            _model_supports_tool_use,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/claude-app"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.return_value = {
+            "models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control):
+            assert _model_supports_prompt_cache(arn) is True
+            assert _model_supports_tool_use(arn) is True
+
+    def test_model_metadata_resolves_inference_profile_and_caches_window(self, tmp_path, monkeypatch):
+        from agent.bedrock_adapter import reset_client_cache
+        from agent.model_metadata import _resolve_bedrock_context_length
+        reset_client_cache()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/metadata-test"
+        mock_control = MagicMock()
+        mock_control.get_inference_profile.return_value = {
+            "models": [{"modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"}],
+        }
+
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=mock_control), \
+             patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None):
+            ctx = _resolve_bedrock_context_length(arn, base_url="https://bedrock-runtime.us-west-2.amazonaws.com")
+            assert ctx == 1_000_000
+
+
 class TestBedrockContextProbe:
     """Test the live context-window probe that reads the real window from
     Bedrock's 'prompt is too long' validation error."""

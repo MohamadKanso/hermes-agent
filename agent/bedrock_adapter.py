@@ -127,6 +127,7 @@ def reset_client_cache():
     _bedrock_runtime_client_cache.clear()
     _bedrock_control_client_cache.clear()
     _bedrock_clients_by_home.clear()
+    _inference_profile_model_cache.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
@@ -427,6 +428,65 @@ _NON_TOOL_CALLING_PATTERNS = [
     "cohere.embed", "amazon.titan-embed",  # embeddings
 ]
 
+_inference_profile_model_cache: Dict[str, Optional[str]] = {}
+
+
+def _is_bedrock_application_inference_profile(model_id: str) -> bool:
+    """Return True if model_id is an AWS Bedrock application inference profile ARN or identifier."""
+    lowered = (model_id or "").lower()
+    return "application-inference-profile/" in lowered or ":application-inference-profile:" in lowered
+
+
+def resolve_bedrock_inference_profile_model(model_id: str, region: str = "") -> Optional[str]:
+    """Resolve the underlying foundation model for a Bedrock application inference profile ARN (#114476).
+
+    Calls ``bedrock.get_inference_profile`` and extracts the model ID (e.g. ``anthropic.claude-sonnet-4-6``)
+    from ``models[].modelArn`` so context-length, prompt-caching and model-capability detection work
+    seamlessly. Returns None if unresolvable (permission denied, unparseable, or boto3 missing).
+    """
+    if not _is_bedrock_application_inference_profile(model_id):
+        return None
+
+    cache_key = model_id.strip().lower()
+    if cache_key in _inference_profile_model_cache:
+        return _inference_profile_model_cache[cache_key]
+
+    effective_region = region
+    if not effective_region and model_id.startswith("arn:aws:bedrock:"):
+        parts = model_id.split(":")
+        if len(parts) >= 4 and parts[3]:
+            effective_region = parts[3]
+    if not effective_region:
+        with suppress(Exception):
+            effective_region = resolve_bedrock_runtime_region()
+
+    try:
+        client = _get_bedrock_control_client(effective_region or "us-east-1")
+        response = client.get_inference_profile(inferenceProfileIdentifier=model_id)
+        for m in response.get("models", []):
+            model_arn = (m.get("modelArn") or "").strip()
+            if not model_arn:
+                continue
+            # e.g. arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+            match = re.search(r"foundation-model/([^:]+)", model_arn)
+            if match:
+                underlying = match.group(1).strip()
+                _inference_profile_model_cache[cache_key] = underlying
+                return underlying
+            if "/" in model_arn:
+                underlying = model_arn.rsplit("/", 1)[-1].strip()
+                if underlying:
+                    _inference_profile_model_cache[cache_key] = underlying
+                    return underlying
+            _inference_profile_model_cache[cache_key] = model_arn
+            return model_arn
+    except Exception as e:
+        logger.debug("Failed to resolve Bedrock inference profile %s: %s", model_id, e)
+
+    _inference_profile_model_cache[cache_key] = None
+    return None
+
+
 # cachePoint allowlist — inverted policy vs tools: unknown models get NO cache markers (they reject
 # cachePoint). Claude only reaches build_converse_kwargs under bearer auth.
 _CACHE_POINT_PATTERNS = ["anthropic.claude", "amazon.nova"]
@@ -434,11 +494,13 @@ _CACHE_POINT_PATTERNS = ["anthropic.claude", "amazon.nova"]
 
 def _model_supports_tool_use(model_id: str) -> bool:
     """False for denylisted models; unknown models default to True."""
-    return not any(pattern in model_id.lower() for pattern in _NON_TOOL_CALLING_PATTERNS)
+    target = resolve_bedrock_inference_profile_model(model_id) or model_id
+    return not any(pattern in target.lower() for pattern in _NON_TOOL_CALLING_PATTERNS)
 
 
 def _model_supports_prompt_cache(model_id: str) -> bool:
-    return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
+    target = resolve_bedrock_inference_profile_model(model_id) or model_id
+    return any(pattern in target.lower() for pattern in _CACHE_POINT_PATTERNS)
 
 
 # --- Server-verdict cachePoint suppression ---
@@ -1110,11 +1172,36 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
 
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
     """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
-    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4")."""
+    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4").
+
+    For application inference profile ARNs (#114476), attempts to resolve the underlying foundation model
+    via ``bedrock:GetInferenceProfile`` so the context window matches the wrapped model (e.g. 1M for Claude).
+    """
+    effective_model_id = model_id
+    if _is_bedrock_application_inference_profile(model_id):
+        underlying = resolve_bedrock_inference_profile_model(model_id, region=region)
+        if underlying:
+            effective_model_id = underlying
+            logger.info(
+                "Resolved Bedrock application inference profile %s to underlying model %s for context length",
+                model_id, underlying,
+            )
+
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
-    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)] if matches else BEDROCK_DEFAULT_CONTEXT_LENGTH
+    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in effective_model_id.lower()]
+    if matches:
+        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+
+    if _is_bedrock_application_inference_profile(model_id):
+        logger.warning(
+            "Bedrock application inference profile %s context window could not be resolved from underlying model; "
+            "falling back to default %d tokens. (Grant bedrock:GetInferenceProfile permission or set "
+            "model.context_length explicitly in config)",
+            model_id, BEDROCK_DEFAULT_CONTEXT_LENGTH,
+        )
+
+    return BEDROCK_DEFAULT_CONTEXT_LENGTH
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
