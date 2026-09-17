@@ -4485,6 +4485,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             # ``base_cut`` is before the user anchor, so this candidate keeps the latest assistant without
             # pulling a completed user turn and its old tool history back into the protected suffix.
             assistant_only_cut = self._ensure_last_assistant_message_in_tail(messages, base_cut, head_end)
+            # If the backward-aligned cut landed before a completed tool group, the helper above cannot
+            # advance past that group. A clean boundary at the latest completed assistant reply can keep
+            # the visible answer while leaving the oversized tool group in the summary.
+            latest_assistant_idx = self._find_last_assistant_message_idx(messages, head_end)
+            if latest_assistant_idx > assistant_only_cut:
+                assistant_only_cut = self._align_boundary_backward(messages, latest_assistant_idx)
             if (
                 self._tail_budget_tokens(messages, cut_idx) > soft_ceiling
                 and assistant_only_cut > head_end
