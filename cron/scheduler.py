@@ -1247,10 +1247,15 @@ def _run_no_agent_job(
     """
     # Load .env first so auto-delivery can resolve *_HOME_CHANNEL: the agent path's per-run dotenv
     # reload never runs for no_agent jobs. Does not override existing values.
+    profile_home = _get_hermes_home()
     try:
-        from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_cli.env_loader import hydrate_profile_secret_sources, load_hermes_dotenv
 
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        load_hermes_dotenv(hermes_home=profile_home)
+        # The script is the whole job, so it has no later agent startup phase to hydrate a routed
+        # profile's external sources. Keep this explicit and profile-local; the script runner only
+        # receives the 1Password bootstrap token it is configured to use.
+        hydrate_profile_secret_sources(profile_home)
     except Exception:
         logger.debug("Job '%s': no_agent .env reload failed", job_id, exc_info=True)
 
@@ -1265,7 +1270,11 @@ def _run_no_agent_job(
     _job_workdir = _resolve_job_workdir(job, job_id)
     try:
         ok, output = _run_job_script_with_claim_heartbeat(
-            job, script_path, workdir=_job_workdir, cancel_event=cancel_event)
+            job,
+            script_path,
+            workdir=_job_workdir,
+            cancel_event=cancel_event,
+        )
     except Exception as exc:
         logger.exception("Job '%s': script execution raised unexpectedly", job_id)
         ok, output = False, f"Script execution failed: {exc}"

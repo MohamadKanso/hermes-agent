@@ -320,9 +320,59 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     return [python_exe, str(path)], env_overlay, None
 
 
+def _onepassword_script_token(profile_home: Path) -> tuple[str, str]:
+    """Return the owning profile's 1Password token for an opted-in no-agent script.
+
+    ``build_subprocess_env`` intentionally scrubs the launch environment for child processes. A
+    routed profile cannot recover its token from that environment because it may belong to another
+    profile, so resolve the configured name through the active secret scope first. The two profile-local
+    dotenv fallbacks cover a cold standalone process and the documented gitignored ``.op.env`` bootstrap
+    file without widening the child environment to every launch secret.
+    """
+    default_name = "OP_SERVICE_ACCOUNT_TOKEN"
+    try:
+        from agent.secret_scope import current_secret_scope, get_secret, load_env_file
+        from agent.secret_sources.base import is_valid_env_name
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        secrets = config.get("secrets") if isinstance(config, dict) else None
+        op_config = secrets.get("onepassword") if isinstance(secrets, dict) else None
+        if not isinstance(op_config, dict) or not op_config.get("enabled"):
+            return default_name, ""
+
+        token_name = str(op_config.get("service_account_token_env") or default_name).strip()
+        if not is_valid_env_name(token_name):
+            logger.warning("Ignoring invalid 1Password service-account env name %r", token_name)
+            return default_name, ""
+
+        scope = current_secret_scope()
+        if scope is not None:
+            # A bound scope is authoritative even outside multiplex mode: a dashboard/desktop
+            # request can serve a routed profile without turning on the gateway-wide multiplexer.
+            token = scope.get(token_name, "") or ""
+        else:
+            try:
+                token = get_secret(token_name, "") or ""
+            except Exception:
+                # A missing scope must not fall back to the launch process's credential. The explicit
+                # profile-file reads below are still safe because they are anchored to this job's home.
+                token = ""
+
+        if not token:
+            token = load_env_file(profile_home / ".env").get(token_name, "") or ""
+        if not token:
+            token = load_env_file(profile_home / ".op.env").get(token_name, "") or ""
+        return token_name, token
+    except Exception:
+        logger.debug("Could not resolve the profile's 1Password token for a cron script", exc_info=True)
+        return default_name, ""
+
+
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
+    allow_onepassword_token: bool = False,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -356,6 +406,15 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         env = build_subprocess_env()
+        if allow_onepassword_token:
+            token_name, token = _onepassword_script_token(_sched._get_hermes_home())
+            # Never let a launch-profile token ride along when this script has no matching profile
+            # token. If configured, the name is normalized below because `op` expects this name.
+            env.pop("OP_SERVICE_ACCOUNT_TOKEN", None)
+            if token_name != "OP_SERVICE_ACCOUNT_TOKEN":
+                env.pop(token_name, None)
+            if token:
+                env["OP_SERVICE_ACCOUNT_TOKEN"] = token
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
@@ -438,8 +497,14 @@ def _run_job_script_with_claim_heartbeat(
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    allow_onepassword_token = bool(job.get("no_agent"))
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(
+            script_path,
+            workdir=workdir,
+            cancel_event=cancel_event,
+            allow_onepassword_token=allow_onepassword_token,
+        )
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -457,10 +522,20 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(
+            script_path,
+            workdir=workdir,
+            cancel_event=cancel_event,
+            allow_onepassword_token=allow_onepassword_token,
+        )
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script(
+            script_path,
+            workdir=workdir,
+            cancel_event=cancel_event,
+            allow_onepassword_token=allow_onepassword_token,
+        )
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.

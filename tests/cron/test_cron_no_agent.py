@@ -137,6 +137,117 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     assert str(loaded_homes[0]) == str(hermes_env)
 
 
+def test_no_agent_script_gets_the_served_profiles_onepassword_token(hermes_env, monkeypatch):
+    """A routed no_agent script gets its profile token, not the launch profile's token."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    (hermes_env / "config.yaml").write_text(
+        "secrets:\n  onepassword:\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    (hermes_env / ".op.env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=profile-token\n",
+        encoding="utf-8",
+    )
+    (hermes_env / "scripts" / "probe.py").write_text(
+        "import os\nprint(os.environ.get('OP_SERVICE_ACCOUNT_TOKEN', 'missing'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "launch-token")
+
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(hermes_env))
+    try:
+        job = create_job(
+            prompt=None,
+            schedule="every 5m",
+            script="probe.py",
+            no_agent=True,
+            deliver="local",
+        )
+        ok, _doc, output, error = run_job(job)
+    finally:
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert ok is True
+    assert error is None
+    assert output.strip() == "profile-token"
+
+
+def test_no_agent_script_does_not_inherit_a_launch_onepassword_token(hermes_env, monkeypatch):
+    """A profile without a token must not borrow the launch profile's token."""
+    from agent.secret_scope import (
+        build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope,
+    )
+    from cron.scheduler_script import _run_job_script
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    (hermes_env / "config.yaml").write_text(
+        "secrets:\n  onepassword:\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    (hermes_env / "scripts" / "probe.py").write_text(
+        "import os\nprint(os.environ.get('OP_SERVICE_ACCOUNT_TOKEN', 'missing'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "launch-token")
+
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(hermes_env))
+    scope_token = set_secret_scope(build_profile_secret_scope(hermes_env))
+    try:
+        ok, output = _run_job_script("probe.py", allow_onepassword_token=True)
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert ok is True
+    assert output.strip() == "missing"
+
+
+def test_no_agent_script_normalizes_custom_onepassword_token_name(hermes_env, monkeypatch):
+    """A custom configured token name still reaches op under its required standard name."""
+    from agent.secret_scope import (
+        build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope,
+    )
+    from cron.scheduler_script import _run_job_script
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    (hermes_env / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    service_account_token_env: MY_OP_TOKEN\n",
+        encoding="utf-8",
+    )
+    (hermes_env / ".op.env").write_text("MY_OP_TOKEN=profile-token\n", encoding="utf-8")
+    (hermes_env / "scripts" / "probe.py").write_text(
+        "import os\n"
+        "print(os.environ.get('OP_SERVICE_ACCOUNT_TOKEN', 'missing'))\n"
+        "print(os.environ.get('MY_OP_TOKEN', 'missing'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MY_OP_TOKEN", "launch-token")
+
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(hermes_env))
+    scope_token = set_secret_scope(build_profile_secret_scope(hermes_env))
+    try:
+        ok, output = _run_job_script("probe.py", allow_onepassword_token=True)
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert ok is True
+    assert output.splitlines() == ["profile-token", "missing"]
+
+
 def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
     hermes_env, monkeypatch,
 ):
