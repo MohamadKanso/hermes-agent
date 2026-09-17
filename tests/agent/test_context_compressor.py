@@ -3656,6 +3656,36 @@ class TestTailTokenBudgetCeiling:
         assert len(tail) < 8
         assert sum(_estimate_msg_budget_tokens(message) for message in tail) <= 15_000
 
+    def test_completed_tool_group_can_move_into_summary_before_final_reply(self):
+        """A completed oversized tool group must not make the protected tail unbounded."""
+        compressor = self._make_compressor()
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": "previous reply"},
+            {"role": "user", "content": "completed request"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": f"call-{i}", "function": {"name": "read_file", "arguments": "{}"}}
+                    for i in range(4)
+                ],
+            },
+            *[
+                {"role": "tool", "tool_call_id": f"call-{i}", "content": "x" * 16_000}
+                for i in range(4)
+            ],
+            {"role": "assistant", "content": "final reply"},
+        ]
+
+        cut = compressor._find_tail_cut_by_tokens(messages, head_end=1)
+        tail = messages[cut:]
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        assert tail == [{"role": "assistant", "content": "final reply"}]
+        assert sum(_estimate_msg_budget_tokens(message) for message in tail) <= 15_000
+
     def test_inflight_user_stays_protected_while_tool_tail_is_pruned(self):
         compressor = self._make_compressor()
         messages = [{"role": "system", "content": "system"}]
