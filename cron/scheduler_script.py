@@ -407,14 +407,19 @@ def _run_job_script(
                 "errors": "replace"}
         env = build_subprocess_env()
         if allow_onepassword_token:
-            token_name, token = _onepassword_script_token(_sched._get_hermes_home())
-            # Never let a launch-profile token ride along when this script has no matching profile
-            # token. If configured, the name is normalized below because `op` expects this name.
-            env.pop("OP_SERVICE_ACCOUNT_TOKEN", None)
-            if token_name != "OP_SERVICE_ACCOUNT_TOKEN":
-                env.pop(token_name, None)
-            if token:
-                env["OP_SERVICE_ACCOUNT_TOKEN"] = token
+            profile_home = _sched._get_hermes_home()
+            from tools.environments.local import _is_routed_home
+
+            if _is_routed_home(profile_home):
+                token_name, token = _onepassword_script_token(profile_home)
+                # Never let a launch-profile token ride along when this script has no matching
+                # profile token. If configured, the name is normalized below because `op` expects
+                # this name. Standalone jobs keep their existing environment behavior.
+                env.pop("OP_SERVICE_ACCOUNT_TOKEN", None)
+                if token_name != "OP_SERVICE_ACCOUNT_TOKEN":
+                    env.pop(token_name, None)
+                if token:
+                    env["OP_SERVICE_ACCOUNT_TOKEN"] = token
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

@@ -157,6 +157,9 @@ def test_no_agent_script_gets_the_served_profiles_onepassword_token(hermes_env, 
         encoding="utf-8",
     )
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "launch-token")
+    launch_home = hermes_env / "launch"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
 
     set_multiplex_active(True)
     home_token = set_hermes_home_override(str(hermes_env))
@@ -195,6 +198,9 @@ def test_no_agent_script_does_not_inherit_a_launch_onepassword_token(hermes_env,
         encoding="utf-8",
     )
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "launch-token")
+    launch_home = hermes_env / "launch"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
 
     set_multiplex_active(True)
     home_token = set_hermes_home_override(str(hermes_env))
@@ -233,6 +239,9 @@ def test_no_agent_script_normalizes_custom_onepassword_token_name(hermes_env, mo
         encoding="utf-8",
     )
     monkeypatch.setenv("MY_OP_TOKEN", "launch-token")
+    launch_home = hermes_env / "launch"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
 
     set_multiplex_active(True)
     home_token = set_hermes_home_override(str(hermes_env))
@@ -246,6 +255,22 @@ def test_no_agent_script_normalizes_custom_onepassword_token_name(hermes_env, mo
 
     assert ok is True
     assert output.splitlines() == ["profile-token", "missing"]
+
+
+def test_no_agent_script_preserves_a_single_profile_onepassword_token(hermes_env, monkeypatch):
+    """A standalone no_agent script keeps its existing token when no routed profile is active."""
+    from cron.scheduler_script import _run_job_script
+
+    (hermes_env / "scripts" / "probe.py").write_text(
+        "import os\nprint(os.environ.get('OP_SERVICE_ACCOUNT_TOKEN', 'missing'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "single-profile-token")
+
+    ok, output = _run_job_script("probe.py", allow_onepassword_token=True)
+
+    assert ok is True
+    assert output.strip() == "single-profile-token"
 
 
 def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
