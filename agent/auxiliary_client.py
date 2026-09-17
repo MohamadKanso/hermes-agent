@@ -7061,10 +7061,10 @@ def _resolve_call_client(
                     task, _explicit)
                 if fb_client is None:
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
-                    raise AuxiliaryClientUnavailable(nous_detail or (
-                        f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
-                        f"a different provider with `hermes model`."))
+                    if nous_detail is None:
+                        from agent.provider_credential_hints import format_missing_provider_credentials
+                        nous_detail = format_missing_provider_credentials(_explicit)
+                    raise AuxiliaryClientUnavailable(nous_detail)
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
