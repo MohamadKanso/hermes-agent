@@ -148,6 +148,30 @@ def test_answer_in_reasoning_capability_survives_route_map_rebuild():
     assert agent.runtime_capabilities["answer_in_reasoning"] is True
 
 
+def test_constructor_capability_reaches_runtime_map_and_primary_snapshot(tmp_path, monkeypatch):
+    """An explicit startup opt-in must drive the live route and its restore snapshot."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        model="test-model",
+        api_key="sk-dummy",
+        provider="vllm",
+        api_mode="chat_completions",
+        base_url="http://127.0.0.1:8000/v1",
+        capabilities={"answer_in_reasoning": True},
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+
+    assert agent.runtime_capabilities["answer_in_reasoning"] is True
+    assert agent._primary_runtime["runtime_capabilities"]["answer_in_reasoning"] is True
+
+
 def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     """A clean stop promotes structured reasoning without a recovery call."""
     agent = _build_agent(tmp_path, monkeypatch)
