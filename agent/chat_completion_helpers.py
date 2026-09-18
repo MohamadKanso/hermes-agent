@@ -1793,7 +1793,7 @@ _LOOPBACK_FALLBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"
 _NON_API_KEY_AUTH_TYPES = frozenset({
     "aws_sdk", "external_process", "oauth_device_code", "oauth_external", "vertex", "virtual",
 })
-_UNUSABLE_FALLBACK_KEYS = frozenset({"no-key-required", "opencode-zen-free-keyless"})
+_UNUSABLE_FALLBACK_KEYS = frozenset({"no-key-required"})
 
 
 def _fallback_auth_value_is_usable(value: Any) -> bool:
@@ -1836,7 +1836,9 @@ def _fallback_destination_auth_failure(
         overlay = HERMES_OVERLAYS.get(provider)
     except Exception:
         overlay = None
-    if overlay is not None and (overlay.keyless or overlay.auth_type in _NON_API_KEY_AUTH_TYPES):
+    if overlay is not None and (
+        getattr(overlay, "keyless", False) or overlay.auth_type in _NON_API_KEY_AUTH_TYPES
+    ):
         return None
 
     if base_url_hostname(base_url) in _LOOPBACK_FALLBACK_HOSTS:

@@ -8,7 +8,6 @@ from run_agent import AIAgent
 
 
 _TEST_KEY = "test-key-12345678"
-_FREE_PLACEHOLDER = "opencode-zen-free-keyless"
 
 
 def _make_agent(fallback_model):
@@ -48,9 +47,9 @@ def _activate(agent, client, pool):
         return agent._try_activate_fallback()
 
 
-def test_paid_destination_with_free_placeholder_is_skipped():
+def test_paid_destination_without_credentials_is_skipped():
     agent = _make_agent({"provider": "opencode", "model": "deepseek-v4-flash-free"})
-    assert _activate(agent, _client("https://opencode.ai/zen/v1", _FREE_PLACEHOLDER), _pool(available=False)) is False
+    assert _activate(agent, _client("https://opencode.ai/zen/v1"), _pool(available=False)) is False
     assert agent.provider == "custom"
     assert agent._unavailable_fallback_keys == {("opencode", "deepseek-v4-flash-free", "")}
 
@@ -72,16 +71,6 @@ def test_pool_read_failure_fails_closed_instead_of_entering_a_401_loop():
     with patch("agent.credential_pool.load_pool", side_effect=OSError("auth store unavailable")):
         reason = _fallback_destination_auth_failure("zai", client.base_url, client)
     assert reason == "credential availability could not be verified"
-
-
-def test_keyless_overlay_still_activates_without_a_pool():
-    agent = _make_agent({"provider": "opencode-free", "model": "mimo-v2.5-free"})
-    assert _activate(
-        agent,
-        _client("https://opencode.ai/zen/v1", _FREE_PLACEHOLDER),
-        _pool(available=False),
-    ) is True
-    assert agent.provider == "opencode-free"
 
 
 def test_non_api_key_provider_still_activates_without_a_pool():
