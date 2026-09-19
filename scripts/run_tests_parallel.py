@@ -25,6 +25,9 @@ Why drop xdist entirely?
 Usage:
     python scripts/run_tests_parallel.py [pytest_args...]
 
+    --files-from accepts one repo-relative or absolute test path per line, or
+    ``-`` to read the list from stdin. It is mutually exclusive with --files.
+
     Common pytest args pass through to each per-file pytest invocation
     (e.g. ``-q``, ``-v``, ``-x``, ``--tb=long``, ``-k 'pattern'``, ``--lf``)
     with no special separator — a bare ``-q`` "just works". Anything after
@@ -141,6 +144,19 @@ def _split_pathspec(value: str) -> List[str]:
             parts.append(part)
             i += 1
     return [p for p in parts if p.strip()]
+
+
+def _read_files_from(value: str) -> List[str]:
+    """read one test path per line without putting the list in argv"""
+    try:
+        text = (
+            sys.stdin.read()
+            if value == "-"
+            else Path(value).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read {value!r}: {exc}") from exc
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 # Host-OS gating (see the ``_OS_MARKS`` block in tests/conftest.py): tests
 # marked for another host are collected and SKIPPED by the conftest hook —
@@ -968,14 +984,24 @@ def main() -> int:
             "so the CI generate job can feed it directly into a matrix."
         ),
     )
-    parser.add_argument(
+    file_inputs = parser.add_mutually_exclusive_group()
+    file_inputs.add_argument(
         "--files",
         metavar="LIST",
         help=(
             "Explicit colon-separated list of test files to run (on "
             "Windows, ';' also separates and drive letters are kept "
             "intact). Bypasses discovery entirely — used by CI matrix "
-            "jobs that receive their file list from the generate job."
+            "jobs that receive their file list from the generate job. "
+            "Use --files-from for lists that exceed per-argument limits."
+        ),
+    )
+    file_inputs.add_argument(
+        "--files-from",
+        metavar="PATH",
+        help=(
+            "Read one test-file path per line from PATH, or from stdin when "
+            "PATH is '-'. Bypasses discovery and avoids per-argument size limits."
         ),
     )
     parser.add_argument(
@@ -1005,9 +1031,20 @@ def main() -> int:
     # it never reaches our positional ``paths``. ``=``-joined forms
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
     OUR_FLAGS = {
-        "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
-        "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
+        "-h",
+        "--help",
+        "-j",
+        "--jobs",
+        "--paths",
+        "--include-integration",
+        "--file-timeout",
+        "--file-retries",
+        "--slice",
+        "--generate-slices",
+        "--files",
+        "--files-from",
     }
+    OUR_FLAGS_WITH_DASH_VALUES = {"--files", "--files-from"}
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
 
@@ -1035,7 +1072,12 @@ def main() -> int:
     bare_passthrough: List[str] = []
     i = 0
     while i < len(before):
+        # ``-`` is a valid stdin value, so keep it with these options.
         tok = before[i]
+        if tok in OUR_FLAGS_WITH_DASH_VALUES and i + 1 < len(before):
+            our_args.extend([tok, before[i + 1]])
+            i += 2
+            continue
         if tok.startswith("-") and not _is_our_flag(tok):
             bare_passthrough.append(tok)
             # Pull the value token for space-separated value flags.
@@ -1116,9 +1158,16 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    # --files: explicit file list from the CI generate job — skip discovery.
-    if args.files:
+    # explicit file lists skip discovery
+    if args.files is not None:
         files = [repo_root / f for f in _split_pathspec(args.files)]
+        roots = []
+    elif args.files_from is not None:
+        try:
+            file_names = _read_files_from(args.files_from)
+        except ValueError as exc:
+            parser.error(f"--files-from: {exc}")
+        files = [repo_root / f for f in file_names]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any

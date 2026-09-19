@@ -350,6 +350,126 @@ def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
 
 
 
+def test_files_from_reads_one_path_per_line(tmp_path: Path) -> None:
+    """a file-backed list runs multiple files and ignores blank lines"""
+    probe_dir = _make_probe_dir(tmp_path)
+    second_probe = probe_dir / "test_second_probe.py"
+    second_probe.write_text(
+        "def test_gamma():\n    assert True\n", encoding="utf-8"
+    )
+    unlisted_probe = probe_dir / "test_unlisted_probe.py"
+    unlisted_probe.write_text(
+        "def test_unlisted():\n    assert True\n", encoding="utf-8"
+    )
+    list_file = tmp_path / "test-files.txt"
+    list_file.write_text(
+        f"\n{probe_dir / 'test_flagprobe.py'}\n\n"
+        f"{second_probe}\n\n",
+        encoding="utf-8",
+    )
+
+    proc = _run_runner(probe_dir, "--files-from", str(list_file), "-q")
+
+    assert proc.returncode == 0, proc.stdout
+    assert "Running 2 test files" in proc.stdout, proc.stdout
+    assert "3✓" in proc.stdout or "3 tests passed" in proc.stdout, proc.stdout
+
+
+def test_files_from_reads_stdin(tmp_path: Path) -> None:
+    """a generated list can be streamed through stdin without a temporary file"""
+    probe_dir = _make_probe_dir(tmp_path)
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    selected = str(probe_dir / "test_flagprobe.py") + "\n"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files-from",
+            "-",
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+            "-q",
+        ],
+        cwd=repo_root,
+        input=selected,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "Running 1 test files" in proc.stdout, proc.stdout
+
+
+def test_files_from_accepts_repo_relative_paths(tmp_path: Path) -> None:
+    """a repo-relative entry resolves from the checkout root"""
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    list_file = tmp_path / "test-files.txt"
+    list_file.write_text(
+        "tests/scripts/test_run_tests_parallel_stdio.py\n", encoding="utf-8"
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "run_tests_parallel.py"),
+            "--files-from",
+            str(list_file),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "Running 1 test files" in proc.stdout, proc.stdout
+    assert "3 tests passed" in proc.stdout, proc.stdout
+
+
+def test_files_and_files_from_are_mutually_exclusive(tmp_path: Path) -> None:
+    probe_dir = _make_probe_dir(tmp_path)
+    list_file = tmp_path / "test-files.txt"
+    list_file.write_text(
+        str(probe_dir / "test_flagprobe.py") + "\n", encoding="utf-8"
+    )
+
+    proc = _run_runner(
+        probe_dir,
+        "--files",
+        str(probe_dir / "test_flagprobe.py"),
+        "--files-from",
+        str(list_file),
+    )
+
+    assert proc.returncode == 2, proc.stdout
+    assert "not allowed with argument" in proc.stdout
+    assert "Discovered" not in proc.stdout
+
+
+def test_files_from_missing_list_fails_before_discovery(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-test-files.txt"
+
+    proc = _run_runner(tmp_path, "--files-from", str(missing))
+
+    assert proc.returncode == 2, proc.stdout
+    assert "--files-from: cannot read" in proc.stdout
+    assert "No test files to run" not in proc.stdout
+
+
 def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     """A positional path arg still overrides discovery (not routed to pytest)."""
     probe_dir = _make_probe_dir(tmp_path)
