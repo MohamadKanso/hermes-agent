@@ -4614,6 +4614,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.
             and any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
+            # Keep the active request protected when a tool row is eligible for the pressure-prune pass.
+            # Splitting first would hide the request before that row can be reduced. The split path is for
+            # aggregate growth across smaller rows.
+            and not any(
+                messages[i].get("role") == "tool"
+                and isinstance(messages[i].get("content"), str)
+                and len(messages[i]["content"]) >= getattr(
+                    self, "proactive_prune_min_result_chars", _PRUNE_MIN_CHARS
+                )
+                for i in range(last_user_idx, cut_idx)
+            )
             # ...and only when the anchored region really is over the ceiling: a short transcript
             # (whole session under the budget) anchors for free, so the exception must not fire.
             # Measured with the walk's own accounting (#84371), not a second thought-charge rule.
