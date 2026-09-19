@@ -1040,7 +1040,8 @@ class SessionDB(
                         "not a database" in err_msg or is_malformed_db_error(exc)
                         or self._is_fts_write_corruption_error(exc)
                     ):
-                        self._raise_if_db_replaced()
+                        with self._lock:
+                            self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
                     if self._enter_fts_fail_open(exc):
