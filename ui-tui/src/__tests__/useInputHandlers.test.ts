@@ -6,9 +6,11 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  isCtrlDShortcut,
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
   shouldDetachEditedHistoryInput,
+  shouldExitOnCtrlD,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
@@ -119,6 +121,92 @@ describe('handleIdleHotkeyExit', () => {
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
     expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
+  })
+})
+
+describe('isCtrlDShortcut', () => {
+  it('recognizes ctrl+d on macos without requiring cmd modifier', () => {
+    expect(isCtrlDShortcut({ ctrl: true, meta: false, super: false }, 'd')).toBe(true)
+    expect(isCtrlDShortcut({ ctrl: true, meta: false, super: false }, 'D')).toBe(true)
+  })
+
+  it('recognizes literal eof control character', () => {
+    expect(isCtrlDShortcut({ ctrl: true, meta: false, super: false }, '\x04')).toBe(true)
+  })
+
+  it('rejects cmd+d on macos so ghostty pane splitting is not intercepted', () => {
+    expect(isCtrlDShortcut({ ctrl: false, meta: true, super: false }, 'd')).toBe(false)
+    expect(isCtrlDShortcut({ ctrl: false, meta: false, super: true }, 'd')).toBe(false)
+  })
+
+  it('rejects alt+d and esc d so forward word deletion is not intercepted', () => {
+    expect(isCtrlDShortcut({ ctrl: false, meta: true, super: false }, 'd')).toBe(false)
+  })
+
+  it('rejects plain d without modifier', () => {
+    expect(isCtrlDShortcut({ ctrl: false, meta: false, super: false }, 'd')).toBe(false)
+  })
+
+  it('rejects other control chords', () => {
+    expect(isCtrlDShortcut({ ctrl: true, meta: false, super: false }, 'c')).toBe(false)
+    expect(isCtrlDShortcut({ ctrl: true, meta: false, super: false }, 'x')).toBe(false)
+  })
+})
+
+describe('shouldExitOnCtrlD', () => {
+  it('exits when idle with empty composer and no images', () => {
+    expect(
+      shouldExitOnCtrlD({
+        busy: false,
+        hasDraft: false,
+        hasImages: false,
+        hasTokens: false
+      })
+    ).toBe(true)
+  })
+
+  it('does not exit when the agent is streaming', () => {
+    expect(
+      shouldExitOnCtrlD({
+        busy: true,
+        hasDraft: false,
+        hasImages: false,
+        hasTokens: false
+      })
+    ).toBe(false)
+  })
+
+  it('does not exit when input has a draft', () => {
+    expect(
+      shouldExitOnCtrlD({
+        busy: false,
+        hasDraft: true,
+        hasImages: false,
+        hasTokens: false
+      })
+    ).toBe(false)
+  })
+
+  it('does not exit when composer has attached images', () => {
+    expect(
+      shouldExitOnCtrlD({
+        busy: false,
+        hasDraft: false,
+        hasImages: true,
+        hasTokens: true
+      })
+    ).toBe(false)
+  })
+
+  it('does not exit when composer has tokens', () => {
+    expect(
+      shouldExitOnCtrlD({
+        busy: false,
+        hasDraft: false,
+        hasImages: false,
+        hasTokens: true
+      })
+    ).toBe(false)
   })
 })
 

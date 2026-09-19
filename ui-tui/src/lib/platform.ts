@@ -34,6 +34,12 @@ export const isMacActionFallback = (
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
 
+/**
+ * matches literal ctrl+d independently of platform action modifier
+ */
+export const isCtrlD = (key: { ctrl: boolean; meta?: boolean; super?: boolean }, ch: string): boolean =>
+  key.ctrl && !key.meta && key.super !== true && (ch.toLowerCase() === 'd' || ch === '\x04')
+
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 

@@ -9,6 +9,7 @@ import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
+  isCtrlD,
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
@@ -367,6 +368,17 @@ function wordRight(s: string, p: number) {
  */
 export function deleteWordForward(value: string, cursor: number): TextInsertResult {
   return { cursor, value: value.slice(0, cursor) + value.slice(wordRight(value, cursor)) }
+}
+
+/**
+ * delete single char under cursor for ctrl+d
+ */
+export function deleteCharForward(value: string, cursor: number): TextInsertResult {
+  if (cursor >= value.length) {
+    return { cursor, value }
+  }
+
+  return { cursor, value: value.slice(0, cursor) + value.slice(nextPos(value, cursor)) }
 }
 
 /**
@@ -1470,6 +1482,7 @@ export function TextInput({
       const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
+      const isCtrlDKey = isCtrlD(k, inp)
       const delFwd = k.delete || fwdDel.current
 
       const isPrintableInput =
@@ -1532,6 +1545,18 @@ export function TextInput({
       } else if (wordMod && inp === 'f') {
         clearSel()
         c = wordRight(v, c)
+      } else if (isCtrlDKey) {
+        if (range) {
+          v = v.slice(0, range.start) + v.slice(range.end)
+          c = range.start
+        } else if (c < v.length) {
+          clearSel()
+          const next = deleteCharForward(v, c)
+          v = next.value
+          c = next.cursor
+        } else {
+          return
+        }
       } else if (wordMod && inp === 'd') {
         // meta+d (readline kill-word). The web dashboard maps Ctrl+Delete to
         // ESC d, which hermes-ink decodes as meta+'d'; without this branch it

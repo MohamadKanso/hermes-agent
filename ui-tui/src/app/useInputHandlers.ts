@@ -6,7 +6,7 @@ import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isCtrlD, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
@@ -30,6 +30,21 @@ const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl 
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
+
+export const isCtrlDShortcut = isCtrlD
+
+export function shouldExitOnCtrlD(opts: {
+  busy?: boolean
+  hasDraft?: boolean
+  hasImages?: boolean
+  hasTokens?: boolean
+}): boolean {
+  if (opts.busy || opts.hasDraft || opts.hasImages || opts.hasTokens) {
+    return false
+  }
+
+  return true
+}
 
 export function handleInputSelectionClipboard(
   selection: ReturnType<typeof getInputSelection>,
@@ -685,14 +700,20 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (isAction(key, ch, 'd')) {
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
+    if (isCtrlDShortcut(key, ch)) {
+      const hasDraft = Boolean(cState.input || cState.inputBuf.length)
+      const hasImages = Boolean(cState.tokens?.some(token => token.kind === 'image'))
+      const hasTokens = Boolean(cState.tokens?.length)
+
+      if (shouldExitOnCtrlD({ busy: live.busy, hasDraft, hasImages, hasTokens })) {
+        return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
+          gateway.gw.publishLocalEvent({
+            payload: { reason: 'idle_exit_hotkey' },
+            session_id: live.sid ?? undefined,
+            type: 'dashboard.new_session_requested'
+          })
         })
-      })
+      }
     }
 
     if (isAction(key, ch, 'l')) {
