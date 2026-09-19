@@ -142,9 +142,10 @@ class TestEnableDisableNested:
 
 
 class TestEnableToolOverrideConsent:
-    """Enabling a non-bundled plugin must surface a consent decision about the
-    privileged ``allow_tool_override`` capability, and persist the operator's
-    choice under ``plugins.entries.<key>.allow_tool_override``."""
+    """Enabling a non-bundled plugin persists an explicit ``allow_tool_override``
+    choice under ``plugins.entries.<key>.allow_tool_override``. When no flag is
+    provided and the manifest declares no capabilities, the grant remains unset
+    and no interactive prompt is fired (#116286, #64228, #29249)."""
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -154,21 +155,93 @@ class TestEnableToolOverrideConsent:
     @patch("hermes_cli.plugins_cmd._save_enabled_set")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_interactive_eof_defaults_to_deny(
+    def test_no_capabilities_no_flag_skips_override_prompt(
         self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
         mock_user, mock_bundled, nested_plugin_env,
     ):
-        """Non-interactive stdin (EOFError) must fail closed to deny."""
+        """When a plugin declares no capabilities, enabling without flags must
+        not prompt for tool overrides or persist any override grant (#116286)."""
         from hermes_cli.plugins_cmd import cmd_enable
         mock_user.return_value = nested_plugin_env
         mock_bundled.return_value = nested_plugin_env / "nonexistent"
 
-        with patch("rich.console.Console.input", side_effect=EOFError):
+        # disk-cleanup has no capabilities declared; input must not be requested.
+        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
             cmd_enable("disk-cleanup")
+
+        mock_set_flag.assert_not_called()
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_explicit_flag_sets_override_grant(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        """Explicit --allow-tool-override persists true without prompt."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
+            cmd_enable("disk-cleanup", allow_tool_override=True)
+
+        mock_set_flag.assert_called_once_with(
+            "disk-cleanup", "allow_tool_override", True
+        )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_explicit_flag_sets_override_deny(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        """Explicit --no-allow-tool-override persists false without prompt."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
+            cmd_enable("disk-cleanup", allow_tool_override=False)
 
         mock_set_flag.assert_called_once_with(
             "disk-cleanup", "allow_tool_override", False
         )
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._run_capability_consent")
+    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_declared_capabilities_runs_capability_consent(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
+        mock_set_flag, mock_consent, mock_user, mock_bundled, tmp_path,
+    ):
+        """A plugin that declares capabilities triggers the capability consent flow."""
+        from hermes_cli.plugins_cmd import cmd_enable
+        _make_plugin_dir(tmp_path, "cap-plugin", {
+            "name": "cap-plugin", "version": "1.0.0",
+            "capabilities": ["tools.override"],
+        })
+        mock_user.return_value = tmp_path
+        mock_bundled.return_value = tmp_path / "nonexistent"
+
+        cmd_enable("cap-plugin")
+
+        mock_consent.assert_called_once()
+        mock_set_flag.assert_not_called()
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

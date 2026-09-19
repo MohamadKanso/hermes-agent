@@ -1087,8 +1087,9 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
-    Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
-    tri-state: ``True``/``False`` skip the prompt, ``None`` asks. Bundled plugins are trusted.
+    Non-bundled plugins request consent for declared capabilities. When no
+    capabilities are declared, no tool-override prompt is shown unless an explicit
+    ``allow_tool_override`` flag is provided. Bundled plugins are trusted.
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -1135,7 +1136,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         if allow_tool_override is not None:
             _resolve_tool_override_grant(console, key, allow_tool_override)
         return
-    _resolve_tool_override_grant(console, key, allow_tool_override)
+    # For plugins declaring no capabilities, do not solicit an override grant unless
+    # the operator explicitly passed --allow-tool-override or --no-allow-tool-override (#116286).
+    if allow_tool_override is not None:
+        _resolve_tool_override_grant(console, key, allow_tool_override)
 
 
 # ── Capability consent flow ──────────────────────────────────────────────────
