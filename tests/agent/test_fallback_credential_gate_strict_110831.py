@@ -99,3 +99,9 @@ def test_auth_header_counts_when_client_key_is_empty():
         default_headers={"Authorization": "Bearer configured"},
     )
     assert _fallback_destination_auth_failure("zai", "https://api.z.ai/v1", client) is None
+
+def test_no_key_placeholder_does_not_authenticate_remote_destination():
+    client = _client("https://api.z.ai/v1", api_key="no-key-required")
+    assert _fallback_destination_auth_failure(
+        "zai", client.base_url, client
+    ) == "no usable credentials are available"
