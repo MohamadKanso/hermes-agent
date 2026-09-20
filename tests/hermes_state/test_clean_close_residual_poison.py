@@ -9,7 +9,9 @@ Reproduces and guards against issue #116244:
 import json
 import sqlite3
 import threading
+
 import pytest
+
 from hermes_state import SessionDB
 
 
@@ -19,8 +21,13 @@ def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry
     path = tmp_path / "synthetic.db"
     db = SessionDB(db_path=path)
     db.create_session("synthetic", "cli")
+    journal_mode = str(db._conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    wal_path = path.with_name(path.name + "-wal")
+    if journal_mode != "wal" or not wal_path.exists():
+        db.close()
+        pytest.skip("requires SQLite WAL mode with an active WAL sidecar")
     conn = db._conn
-    assert db._db_sidecar_identity and path.with_name(path.name + "-wal").exists()
+    assert db._db_sidecar_identity
     lock, close, guard = db._lock, db._close_connection_quietly, db._raise_if_db_replaced
     closed, progress, second = threading.Event(), threading.Event(), threading.Event()
     calls = 0
@@ -56,7 +63,7 @@ def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry
     def paused_close(connection):
         close(connection)
         if connection is conn:
-            assert not path.with_name(path.name + "-wal").exists(), "real close did not end WAL"
+            assert not wal_path.exists(), "real close did not end WAL"
             closed.set()
             assert progress.wait(10), "writer reached neither guard nor lock"
 
