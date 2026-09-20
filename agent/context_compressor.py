@@ -4598,6 +4598,19 @@ Write only the summary body. Do not include any preamble or prefix."""
         base_cut = cut_idx
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        has_oversized_tail_row = any(
+            _estimate_msg_budget_tokens(messages[i]) > soft_ceiling
+            for i in range(user_anchored_cut, n)
+        )
+        has_prunable_inflight_tool = (
+            self._find_inflight_user_task(messages) is not None
+            and any(
+                messages[i].get("role") == "tool"
+                and isinstance(messages[i].get("content"), str)
+                and len(messages[i]["content"]) >= _PRUNE_MIN_CHARS
+                for i in range(last_user_idx, n)
+            )
+        )
         split_oversized_turn = False
         # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the
         # compressible region (see ``_ensure_last_user_message_in_tail``), so ``last_user_idx`` is a
@@ -4615,16 +4628,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             # active request out of the tail buys no reclaim and loses the #10896 anchor.
             and any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
             # Keep the active request protected when a tool row is eligible for the pressure-prune pass.
-            # Splitting first would hide the request before that row can be reduced. The split path is for
-            # aggregate growth across smaller rows.
-            and not any(
-                messages[i].get("role") == "tool"
-                and isinstance(messages[i].get("content"), str)
-                and len(messages[i]["content"]) >= getattr(
-                    self, "proactive_prune_min_result_chars", _PRUNE_MIN_CHARS
-                )
-                for i in range(last_user_idx, cut_idx)
-            )
+            # Splitting first would hide the request before that row can be reduced. A single row that is
+            # already over the soft ceiling is also indivisible continuity, even for a completed turn.
+            and not has_oversized_tail_row
+            and not has_prunable_inflight_tool
             # ...and only when the anchored region really is over the ceiling: a short transcript
             # (whole session under the budget) anchors for free, so the exception must not fire.
             # Measured with the walk's own accounting (#84371), not a second thought-charge rule.
@@ -4672,6 +4679,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 self._tail_budget_tokens(messages, cut_idx) > soft_ceiling
                 and assistant_only_cut > head_end
                 and self._tail_budget_tokens(messages, assistant_only_cut) <= soft_ceiling
+                and not has_oversized_tail_row
             ):
                 cut_idx = assistant_only_cut
 

@@ -143,6 +143,14 @@ def test_full_compaction_preserves_active_request_and_tool_pairs(
     compressor: ContextCompressor,
 ) -> None:
     messages = _oversized_active_turn()
+    expected_tail_cut = compressor._find_tail_cut_by_tokens(
+        messages, compressor._protect_head_size(messages), token_budget=_TOKEN_BUDGET,
+    )
+    expected_tail_call_ids = {
+        call["id"]
+        for message in messages[expected_tail_cut:]
+        for call in message.get("tool_calls") or []
+    }
 
     # Exercise the deterministic handoff too: even when the summary model is
     # unavailable, splitting the turn must not lose the opening request.
@@ -162,6 +170,12 @@ def test_full_compaction_preserves_active_request_and_tool_pairs(
     ) == 1
     assert len(compressed) < len(messages)
     _assert_tool_pairs_are_complete(compressed)
+    compressed_call_ids = {
+        call["id"]
+        for message in compressed
+        for call in message.get("tool_calls") or []
+    }
+    assert expected_tail_call_ids <= compressed_call_ids
 
 
 def test_n_user_tail_guarantee_outranks_the_split() -> None:

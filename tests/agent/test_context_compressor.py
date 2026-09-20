@@ -3547,6 +3547,8 @@ class TestMinTailUserMessages:
 
 
 class TestTailTokenBudgetCeiling:
+    """the recent-message floor must not turn into an unbounded tail."""
+
     def test_message_floor_does_not_unboundedly_override_soft_ceiling(self):
         """Oversized optional rows must not ride the count floor past 1.5x budget."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
@@ -3601,11 +3603,6 @@ class TestTailTokenBudgetCeiling:
             c.tail_token_budget * 1.5
         )
         assert messages[7:] == oversized_tail
-
-
-
-class TestTailTokenBudgetCeiling:
-    """the recent-message floor must not turn into an unbounded tail."""
 
     def _make_compressor(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
@@ -3685,6 +3682,34 @@ class TestTailTokenBudgetCeiling:
 
         assert tail == [{"role": "assistant", "content": "final reply"}]
         assert sum(_estimate_msg_budget_tokens(message) for message in tail) <= 15_000
+
+    def test_inflight_user_stays_protected_for_default_prune_threshold(self):
+        """Rows above the ordinary 200-character prune floor stay behind the active request."""
+        compressor = self._make_compressor()
+        compressor.tail_token_budget = 1_000
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "finished request"},
+            {"role": "assistant", "content": "finished"},
+            {"role": "user", "content": "active request"},
+        ]
+        for i in range(12):
+            call_id = f"call-{i}"
+            messages.extend([
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": "x" * 500},
+            ])
+
+        cut = compressor._find_tail_cut_by_tokens(messages, head_end=1)
+
+        assert any(message.get("content") == "active request" for message in messages[cut:])
 
     def test_inflight_user_stays_protected_while_tool_tail_is_pruned(self):
         compressor = self._make_compressor()
