@@ -1343,6 +1343,53 @@ def test_ios_disconnect_releases_canonical_bot_chat_lease_after_completed_turn(
     assert desktop_session.get("active_session_lease") is desktop_lease
 
 
+def test_detached_bot_chat_lease_release_holds_resume_lock(server, monkeypatch):
+    """reconnect cannot attach between the dead check and detached lease release."""
+    sid = "ios-detached-lock-order"
+    lock_state = {"held": False}
+
+    class tracking_resume_lock:
+        def __enter__(self):
+            lock_state["held"] = True
+
+        def __exit__(self, *_args):
+            lock_state["held"] = False
+
+    class lease:
+        released = False
+        enabled = True
+        track_liveness = False
+        metadata = {"live_session_id": sid, "bot_live_delivery_consumer": True}
+        surface = "ios"
+
+        def release(self):
+            self.released = True
+
+    current_lease = lease()
+
+    class tracking_session(dict):
+        def pop(self, key, *args):
+            if key == "active_session_lease":
+                assert lock_state["held"]
+            return super().pop(key, *args)
+
+    session = tracking_session(
+        active_session_lease=current_lease,
+        history_lock=threading.RLock(),
+        running=False,
+        session_key=sid,
+        source="ios",
+        transport=server._detached_ws_transport,
+    )
+    monkeypatch.setattr(server, "_session_resume_lock", tracking_resume_lock())
+    monkeypatch.setattr(server, "_sessions", {sid: session})
+    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *args: False)
+
+    assert server._release_detached_bot_chat_slot(session, sid) is True
+    assert current_lease.released is True
+    assert session.get("active_session_lease") is None
+
+
 def test_sync_session_key_after_compress_reanchors_active_session_lease(
     server, monkeypatch, tmp_path
 ):

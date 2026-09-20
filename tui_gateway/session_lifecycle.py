@@ -268,26 +268,28 @@ def _release_detached_bot_chat_slot(session: dict | None, sid: str | None = None
     """
     if not session or not _is_canonical_bot_chat_or_mobile(session):
         return False
-    if session.get("queued_prompt") or session.get("queued_prompts"):
-        return False
-    if not _transport_is_dead(session.get("transport")):
-        return False
-    if sid is None:
-        with _sessions_lock:
+    with _session_resume_lock, _sessions_lock:
+        if sid is None:
             for k, v in _sessions.items():
                 if v is session:
                     sid = k
                     break
-    if not sid:
-        sid = str(session.get("session_key") or "")
-    if sid and _session_has_active_delegations(sid, session):
-        return False
-    lease = None
-    hl = session.get("history_lock")
-    with (hl if hl is not None else contextlib.nullcontext()):
-        if session.get("running"):
+        if not sid or _sessions.get(sid) is not session:
             return False
-        lease = session.pop("active_session_lease", None)
+        if session.get("queued_prompt") or session.get("queued_prompts"):
+            return False
+        if _session_has_active_delegations(sid, session):
+            return False
+        hl = session.get("history_lock")
+        with (hl if hl is not None else contextlib.nullcontext()):
+            if session.get("running"):
+                return False
+            # Reconnect and detach both take this leaf lock. Keep it through the lease pop so a live
+            # transport cannot attach after the dead-state check but before ownership is released.
+            with _session_transport_lock:
+                if not _transport_is_dead(session.get("transport")) or _session_has_live_transport(session):
+                    return False
+                lease = session.pop("active_session_lease", None)
     if lease is None:
         return False
     meta = getattr(lease, "metadata", None) or {}
