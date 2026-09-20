@@ -267,6 +267,9 @@ def settle_unrecovered_error(
             compression_attempts=compression_attempts, result=result,
         )
 
+    _extract_ctx = getattr(agent, "_extract_api_error_context", None)
+    error_context = _extract_ctx(api_error) if callable(_extract_ctx) else {}
+
     # ``FailoverReason.billing`` (402) is deliberately NOT excluded: pool rotation and
     # eager fallback already gave up, so retrying only burns paid requests on a depleted
     # balance. Mirrors 401/403.
@@ -331,7 +334,10 @@ def settle_unrecovered_error(
             if agent._has_pending_fallback():
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
                 agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
-            if agent._try_activate_fallback():
+            if agent._try_activate_fallback(
+                reason=classified.reason,
+                reset_at=error_context.get("reset_at") if isinstance(error_context, dict) else None,
+            ):
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
@@ -360,7 +366,10 @@ def settle_unrecovered_error(
             return _verdict("continue")
         if agent._has_pending_fallback():
             agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        if agent._try_activate_fallback():
+        if agent._try_activate_fallback(
+            reason=classified.reason,
+            reset_at=error_context.get("reset_at") if isinstance(error_context, dict) else None,
+        ):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
