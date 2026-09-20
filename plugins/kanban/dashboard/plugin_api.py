@@ -259,7 +259,12 @@ def _sort_done_tasks(tasks: list[dict[str, Any]]) -> None:
     """sort done cards by completion time and keep missing timestamps last."""
     # sort the tie-breaker first so the stable timestamp sort preserves id DESC.
     tasks.sort(key=lambda task: task["id"], reverse=True)
-    tasks.sort(key=lambda task: (task["completed_at"] is None, -(task["completed_at"] or 0)))
+
+    def _completed_at_key(task: dict[str, Any]) -> tuple[bool, int]:
+        completed_at = kanban_db._to_epoch(task.get("completed_at"))
+        return (completed_at is None, -(completed_at or 0))
+
+    tasks.sort(key=_completed_at_key)
 
 
 def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
