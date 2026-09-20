@@ -139,6 +139,31 @@ def test_oversized_active_turn_uses_a_mid_turn_tool_boundary(
     _assert_tool_pairs_are_complete(messages[cut:])
 
 
+def test_stale_reasoning_on_older_tool_calls_does_not_block_the_split(
+    compressor: ContextCompressor,
+) -> None:
+    messages = _oversized_active_turn()
+    older_tool_call = messages[4]
+    older_tool_call["reasoning_content"] = "stale reasoning " * 200
+
+    head_end = compressor._protect_head_size(messages)
+    cut = compressor._find_tail_cut_by_tokens(
+        messages,
+        head_end,
+        token_budget=_TOKEN_BUDGET,
+    )
+
+    active_user_idx = next(
+        index
+        for index, message in enumerate(messages)
+        if message.get("content") == _ACTIVE_REQUEST
+    )
+    assert cut > active_user_idx
+    assert messages[cut]["role"] == "assistant"
+    _assert_tool_pairs_are_complete(messages[head_end:cut])
+    _assert_tool_pairs_are_complete(messages[cut:])
+
+
 def test_full_compaction_preserves_active_request_and_tool_pairs(
     compressor: ContextCompressor,
 ) -> None:

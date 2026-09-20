@@ -4598,8 +4598,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         base_cut = cut_idx
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        newest_asst_idx = _last_assistant_index(messages)
+        charge_all_thinking = self._stale_thinking_on_wire()
         has_oversized_tail_row = any(
-            _estimate_msg_budget_tokens(messages[i]) > soft_ceiling
+            _estimate_msg_budget_tokens(
+                messages[i], charge_all_thinking or i == newest_asst_idx,
+            ) > soft_ceiling
             for i in range(user_anchored_cut, n)
         )
         has_prunable_inflight_tool = (
