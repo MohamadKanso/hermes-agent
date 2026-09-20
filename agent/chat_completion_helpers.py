@@ -1992,6 +1992,213 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+_LOOPBACK_FALLBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+_NON_API_KEY_AUTH_TYPES = frozenset({
+    "aws_sdk", "external_process", "oauth_device_code", "oauth_external", "vertex", "virtual",
+})
+_UNUSABLE_FALLBACK_KEYS = frozenset({"no-key-required"})
+
+
+def _fallback_auth_value_is_usable(value: Any) -> bool:
+    """Return whether a resolved key or auth callable can authenticate a request."""
+    if callable(value):
+        return True
+    value = str(value or "").strip()
+    return bool(value) and value not in _UNUSABLE_FALLBACK_KEYS
+
+
+def _fallback_client_has_auth(client: Any) -> bool:
+    """Check client auth without treating Hermes' local/keyless placeholders as keys."""
+    if _fallback_auth_value_is_usable(getattr(client, "api_key", None)):
+        return True
+    headers = getattr(client, "default_headers", None)
+    try:
+        for name, value in headers.items():
+            if str(name).lower() == "authorization" and _fallback_auth_value_is_usable(value):
+                return True
+    except (AttributeError, TypeError):
+        pass
+    return False
+
+
+def _fallback_destination_auth_failure(
+    provider: str, base_url: str, client: Any, api_key_hint: Any = None,
+) -> Optional[str]:
+    """Return why a fallback cannot authenticate, or None when it has an auth path.
+
+    The fallback client has already been resolved, so non-api-key providers and local endpoints
+    are usable even when ``client.api_key`` is empty. For ordinary remote providers, require a
+    credential that is available now. This avoids swapping into a pool whose entries are all
+    exhausted, which would keep the same retry loop alive under a different provider name.
+    """
+    if _fallback_auth_value_is_usable(api_key_hint) or _fallback_client_has_auth(client):
+        return None
+
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+        overlay = HERMES_OVERLAYS.get(provider)
+    except Exception:
+        overlay = None
+    if overlay is not None and (
+        getattr(overlay, "keyless", False) or overlay.auth_type in _NON_API_KEY_AUTH_TYPES
+    ):
+        return None
+
+    if base_url_hostname(base_url) in _LOOPBACK_FALLBACK_HOSTS:
+        return None
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider)
+        if pool is not None and pool.has_available():
+            return None
+    except Exception as exc:
+        logger.warning(
+            "Fallback skip: could not verify credentials for %s (%s)", provider, type(exc).__name__
+        )
+        return "credential availability could not be verified"
+    return "no usable credentials are available"
+
+def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
+    """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
+    short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
+    context across every provider again."""
+    from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
+    if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
+        agent._rate_limited_until = max(
+            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+    return False
+
+
+def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
+    """True when every credential the candidate would use sits in an exhaustion cooldown longer
+    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
+    turn the same way the primary just did (#89401). A short throttle still gets its chance."""
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(fb_provider)
+        except Exception:
+            return False
+    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
+        return False
+    until = pool.next_available_at(model=fb_model)
+    return until is None or until - time.time() > 600
+
+
+def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
+    """True when the entry is already unavailable, malformed, locally unusable, or resolves
+    to the backend that just failed (falling back to it would loop the failure)."""
+    if fb_key in unavailable:
+        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        return True
+    if not fb_provider or not fb_model:
+        return True
+    from agent.fallback_cooldown import _is_entitlement_rejected
+    if _is_entitlement_rejected(agent, fb_provider, fb_model):
+        logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
+        return True
+    if _candidate_pool_exhausted(agent, fb_provider, fb_model):
+        logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
+        return True
+    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
+    if local_skip_reason:
+        unavailable.add(fb_key)
+        logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
+        return True
+    # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
+    # are owned by agent.backend_identity — do not re-implement comparisons here.
+    # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
+    # See #22548, #62984, #70893.
+    from agent.backend_identity import BackendIdentity, should_skip_candidate
+    current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
+        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
+    fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
+    if should_skip_candidate(fb_ident, current_ident):
+        logger.warning(
+            "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
+            fb_provider, fb_model, current_ident.base_url or current_ident.provider)
+        return True
+    return False
+
+
+def _update_fallback_context_compressor(agent) -> None:
+    """Point compression limits at the fallback model's context window (not the primary's),
+    respecting the explicit model.context_length config override."""
+    compressor = getattr(agent, "context_compressor", None)
+    if not compressor:
+        return
+    from agent.model_metadata import get_model_context_length
+    fb_context_length = get_model_context_length(
+        agent.model, base_url=agent.base_url,
+        api_key=agent.api_key if isinstance(agent.api_key, str) else "",  # callable (Entra ID) → probes need str
+        provider=agent.provider,
+        config_context_length=getattr(agent, "_config_context_length", None),
+        custom_providers=getattr(agent, "_custom_providers", None),
+    )
+    compressor.update_model(  # callable api_key preserved → call_llm
+        model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
+        api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+    )
+    # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
+    # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
+    # resolving an auxiliary client while the primary route is failing (#114707).
+    if getattr(agent, "_compression_feasibility_checked", False) is True:
+        from agent.conversation_compression import revalidate_compression_feasibility
+        revalidate_compression_feasibility(agent)
+
+
+def _reresolve_fallback_reasoning_config(agent) -> None:
+    """Per-model override > global reasoning_effort (YAML False = disabled); a config load
+    failure keeps the current reasoning_config rather than killing the swap."""
+    try:
+        # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
+        # because a config load failure must not kill the swap.
+        from hermes_cli.config import load_config
+        from hermes_constants import resolve_reasoning_config
+        agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
+        logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
+    except Exception as _reasoning_err:
+        logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
+
+
+def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
+    """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
+    provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
+    config injected — a caller override of the same key won at init and differs, so it survives;
+    keys the new provider redefines are re-added by the merge."""
+    try:
+        from agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
+        custom_providers = getattr(agent, "_custom_providers", None) or []
+        old_provider_eb = _custom_provider_extra_body_for_agent(provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers) or {}
+        overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        existing_eb = overrides.get("extra_body")
+        if isinstance(existing_eb, dict) and old_provider_eb:
+            scrubbed = {k: v for k, v in existing_eb.items() if not (k in old_provider_eb and v == old_provider_eb[k])}
+            if scrubbed:
+                overrides["extra_body"] = scrubbed
+            else:
+                overrides.pop("extra_body", None)
+            agent.request_overrides = overrides
+        _merge_custom_provider_extra_body(agent, custom_providers)
+        logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
+    except Exception as _eb_err:
+        logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
+
+
+def _buffer_fallback_notice(agent, notice: str) -> None:
+    """Buffer the switch notice for terminal failure AND retain it as a durable one-shot for
+    _emit_pending_fallback_notice (a successful fallback clears retry chatter)."""
+    agent._buffer_diagnostic_status(notice)
+    pending = getattr(agent, "_pending_fallback_notice", None)
+    if isinstance(pending, list):
+        pending.append(notice)
+    else:
+        agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
+
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
@@ -2054,6 +2261,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     fb_api_mode = "chat_completions"
                 elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                     fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
+
+            # do not commit a remote fallback that has no usable key or available pool entry.
+            # A resolved client is not proof that the next request can authenticate: keyless
+            # placeholders can build a paid client that then loops on 401 forever.
+            auth_failure = _fallback_destination_auth_failure(
+                fb_provider, fb_base_url, fb_client, fb_api_key_hint,
+            )
+            if auth_failure:
+                unavailable.add(fb_key)
+                message = f"Fallback skip: {fb_provider}/{fb_model} {auth_failure}"
+                logger.warning(message)
+                agent._buffer_status(f"⚠️ {message}.")
+                continue
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 
