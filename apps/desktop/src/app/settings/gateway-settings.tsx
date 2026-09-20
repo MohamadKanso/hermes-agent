@@ -405,20 +405,17 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   //   * we're idle but showing a previously-saved remote config (re-opening
   //     settings for a gateway already signed-in or with a saved token), so
   //     its control appears immediately with no flicker.
-  // While probing (or after a probe error), the scheme is unknown and we show
-  // the probe status row instead of a control.
+  // While probing, the scheme is unknown and we show the probe status row
+  // instead of a control. After a failed probe, keep the saved control visible
+  // so the user can correct the connection.
   const hasSavedRemote = state.remoteTokenSet || state.remoteOauthConnected
 
   const authResolved = useMemo(() => {
-    if (hasSavedRemote) {
-      return true
-    }
-
     if (probeStatus === 'done' || probeStatus === 'error') {
       return true
     }
 
-    return false
+    return probeStatus === 'idle' && hasSavedRemote
   }, [probeStatus, hasSavedRemote])
 
   const providerLabel = useMemo(() => {
