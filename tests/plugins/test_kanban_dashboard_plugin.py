@@ -199,6 +199,27 @@ def test_done_column_uses_completion_order_without_reordering_queue_columns(clie
     assert [task["title"] for task in columns["ready"]] == ["ready first", "ready second"]
 
 
+def test_done_column_uses_id_tiebreaker_for_equal_completion_times(client):
+    tasks = [
+        client.post("/api/plugins/kanban/tasks", json={"title": title}).json()["task"]
+        for title in ("same time first", "same time second")
+    ]
+
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.executemany(
+                "UPDATE tasks SET status = ?, completed_at = ? WHERE id = ?",
+                [("done", 100, task["id"]) for task in tasks],
+            )
+    finally:
+        conn.close()
+
+    columns = {column["name"]: column["tasks"] for column in client.get("/api/plugins/kanban/board").json()["columns"]}
+    expected = sorted(tasks, key=lambda task: task["id"], reverse=True)
+    assert [task["id"] for task in columns["done"]] == [task["id"] for task in expected]
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
