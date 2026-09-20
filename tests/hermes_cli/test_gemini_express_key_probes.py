@@ -35,7 +35,7 @@ def test_doctor_gemini_probe_routes_to_aiplatform_when_base_url_configured(monke
     assert headers["x-goog-api-key"] == "AQ.express-key" and "Authorization" not in headers
 
 
-def test_dashboard_gemini_key_probe_validates_studio_host(monkeypatch):
+def test_dashboard_gemini_key_probe_uses_default_and_configured_bases(monkeypatch):
     import hermes_cli.web_routers.config_env as mod
     from hermes_cli.web_models import EnvVarUpdate
 
@@ -71,3 +71,12 @@ def test_dashboard_gemini_key_probe_validates_studio_host(monkeypatch):
     assert out["ok"] is True
     assert seen["url"] == _STUDIO_MODELS
     assert seen["headers"].get("x-goog-api-key") == "AQ.studio-key"
+
+    seen.clear()
+    monkeypatch.setattr(mod, "_gemini_base_url_for_profile", lambda profile: "https://aiplatform.googleapis.com")
+    body = EnvVarUpdate(key="GEMINI_API_KEY", value="AQ.express-key")
+    out = asyncio.run(mod.validate_provider_credential(body, request=None))  # type: ignore[arg-type]
+
+    assert out["ok"] is True
+    assert seen["url"] == VERTEX_EXPRESS_BASE_URL + "/models"
+    assert seen["headers"].get("x-goog-api-key") == "AQ.express-key"
