@@ -105,10 +105,8 @@ _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
 def is_vertex_express_key(api_key: str) -> bool:
-    """True when the key matches the ``AQ.…`` format used by Vertex AI express mode
-    (and newer Google AI Studio projects)."""
+    """Legacy key-shape helper; endpoint routing must use the configured base URL."""
     return str(api_key or "").strip().startswith("AQ.")
-
 
 def is_vertex_express_base_url(base_url: str) -> bool:
     """An aiplatform host without a project path — the express surface. The OAuth Vertex provider's
