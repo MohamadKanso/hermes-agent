@@ -57,7 +57,7 @@ export function isRemoteReauthError(error: string | null | undefined): boolean {
     text.includes('gateway sign-in required') ||
     text.includes('needs oauth login') ||
     (text.includes('oauth') && (text.includes('not signed in') || text.includes('sign in'))) ||
-    (text.includes('session token') && (text.includes('expired') || text.includes('invalid') || text.includes('required')))
+    (text.includes('session token') && text.includes('expired'))
   )
 }
 
