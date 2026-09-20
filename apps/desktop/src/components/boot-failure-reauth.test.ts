@@ -114,6 +114,8 @@ describe('isRemoteReauthError', () => {
 
   it('ignores non-auth boot errors and nullish', () => {
     expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
+    expect(isRemoteReauthError('Another SSH connection owns this remote dashboard; a session token is required to reuse it.')).toBe(false)
+    expect(isRemoteReauthError('invalid session token')).toBe(false)
     expect(isRemoteReauthError(null)).toBe(false)
   })
 })
