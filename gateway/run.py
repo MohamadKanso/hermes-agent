@@ -5197,7 +5197,13 @@ async def _start_gateway_start_control_socket(runner):
                 except Exception:
                     logger.warning("Control-socket MCP reload failed", exc_info=True)
                 else:
-                    logger.info("Control-socket MCP reload finished: %s", result)
+                    if result.get("failed_profiles"):
+                        logger.warning(
+                            "Control-socket MCP reload finished with failed profiles: %s",
+                            result["failed_profiles"],
+                        )
+                    else:
+                        logger.info("Control-socket MCP reload finished: %s", result)
 
             future.add_done_callback(_log_result)
             return {"reloading": True, "pid": os.getpid()}

@@ -2526,40 +2526,60 @@ class GatewayTurnMixin:
         except Exception as _exc:
             logger.debug("Failed to update cached agent tools after MCP reload: %s", _exc)
 
+    def _get_mcp_reload_lock(self) -> asyncio.Lock:
+        """Return the one per-runner lock shared by chat and control-socket reloads."""
+        lock = self.__dict__.get("_mcp_reload_lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            self.__dict__["_mcp_reload_lock"] = lock
+        return lock
+
+    async def _execute_mcp_reload_serialized(
+        self, event: Optional[MessageEvent] = None, *, profile: Optional[str] = None,
+    ) -> str:
+        """Run one chat or operator reload without overlapping another reload on this runner."""
+        async with self._get_mcp_reload_lock():
+            return await self._execute_mcp_reload(event, profile=profile)
+
     async def _execute_mcp_reload_from_control(self) -> dict[str, Any]:
         """Reload MCP for an operator request without creating a fake chat event.
 
         A multiplexed gateway has one MCP scope per served profile, so an out-of-band
-        reload has to visit each profile explicitly. The lock keeps two watchdog or
-        cron calls from tearing down the same connections at the same time.
+        reload has to visit each profile explicitly. The shared lock keeps operator and
+        chat reloads from tearing down the same connections at the same time.
         """
-        lock = self.__dict__.get("_mcp_control_reload_lock")
-        if lock is None:
-            lock = asyncio.Lock()
-            self.__dict__["_mcp_control_reload_lock"] = lock
-
-        async with lock:
+        async with self._get_mcp_reload_lock():
             multiplex = bool(getattr(self.config, "multiplex_profiles", False))
             if not multiplex:
-                return {"default": await self._execute_mcp_reload()}
+                try:
+                    result = await self._execute_mcp_reload(raise_on_error=True)
+                except Exception as exc:  # noqa: BLE001 - report the local control failure as data
+                    logger.warning("Control-socket MCP reload failed: %s", exc)
+                    return {"failed_profiles": ["default"], "errors": {"default": str(exc)}}
+                return {"default": result, "failed_profiles": []}
 
             from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
 
             results: dict[str, str] = {}
             failed_profiles: list[str] = []
+            errors: dict[str, str] = {}
             served_homes = getattr(self, "_served_profile_homes", None)
             profile_homes = list(served_homes.items()) if served_homes else _multiplex_profile_homes(self.config)
             for profile, profile_home in profile_homes:
                 try:
                     with _profile_runtime_scope(Path(profile_home)):
-                        results[profile] = await self._execute_mcp_reload(profile=profile)
+                        results[profile] = await self._execute_mcp_reload(
+                            profile=profile, raise_on_error=True,
+                        )
                 except Exception as exc:  # noqa: BLE001 - one broken profile should not block the rest
                     failed_profiles.append(profile)
+                    errors[profile] = str(exc)
                     logger.warning("Control-socket MCP reload failed for profile %s: %s", profile, exc)
-            return {"profiles": results, "failed_profiles": failed_profiles}
+            return {"profiles": results, "failed_profiles": failed_profiles, "errors": errors}
 
     async def _execute_mcp_reload(
         self, event: Optional[MessageEvent] = None, *, profile: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> str:
         """Disconnect, reconnect, and notify MCP tool changes (shared by button / text / no-confirm paths).
 
@@ -2574,7 +2594,7 @@ class GatewayTurnMixin:
         if multiplex and event is not None and not get_hermes_home_override():
             profile_home = self._resolve_profile_home_for_source(event.source)
             with _profile_runtime_scope(Path(profile_home)):
-                return await self._execute_mcp_reload(event)
+                return await self._execute_mcp_reload(event, profile=profile, raise_on_error=raise_on_error)
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
@@ -2644,6 +2664,8 @@ class GatewayTurnMixin:
 
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
+            if raise_on_error:
+                raise
             return t("gateway.reload_mcp.failed", error=e)
 
     def _get_proxy_url(self) -> Optional[str]:

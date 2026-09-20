@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -145,6 +147,64 @@ async def test_control_reload_visits_every_served_profile(
         ("discover", homes[1][1]),
     ]
     assert refreshes == [(True, "default"), (True, "worker")]
+
+
+@pytest.mark.asyncio
+async def test_control_reload_reports_failed_profile_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gateway.run import GatewayRunner
+
+    homes = [("default", tmp_path / "default"), ("worker", tmp_path / "worker")]
+    for _name, home in homes:
+        home.mkdir()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    calls: list[tuple[str | None, bool]] = []
+
+    async def fake_reload(event=None, *, profile=None, raise_on_error=False):
+        calls.append((profile, raise_on_error))
+        if profile == "worker":
+            raise RuntimeError("worker unavailable")
+        return f"done:{profile}"
+
+    runner._execute_mcp_reload = fake_reload
+    monkeypatch.setattr("gateway.run._multiplex_profile_homes", lambda _config: homes)
+    monkeypatch.setattr("gateway.run._profile_runtime_scope", lambda _home: nullcontext())
+
+    result = await runner._execute_mcp_reload_from_control()
+
+    assert result["profiles"] == {"default": "done:default"}
+    assert result["failed_profiles"] == ["worker"]
+    assert result["errors"] == {"worker": "worker unavailable"}
+    assert calls == [("default", True), ("worker", True)]
+
+
+@pytest.mark.asyncio
+async def test_chat_and_control_reload_share_one_lock() -> None:
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=False)
+    active = peak = 0
+
+    async def fake_reload(event=None, *, profile=None, raise_on_error=False):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return "done"
+
+    runner._execute_mcp_reload = fake_reload
+    chat_result, control_result = await asyncio.gather(
+        runner._execute_mcp_reload_serialized(),
+        runner._execute_mcp_reload_from_control(),
+    )
+
+    assert chat_result == "done"
+    assert control_result == {"default": "done", "failed_profiles": []}
+    assert peak == 1
 
 
 @pytest.mark.asyncio

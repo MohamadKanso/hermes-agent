@@ -6307,11 +6307,25 @@ def _cmd_setup(args):
     gateway_setup()
 
 
+def _reload_mcp_control_home() -> Path:
+    """Return the home that owns the live MCP reload control socket.
+
+    A multiplexed gateway is owned by the default root even when the CLI was launched with a named
+    profile selected. Standalone profile gateways still own their individual profile homes.
+    """
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+
+    active_home = Path(get_hermes_home())
+    default_root = Path(get_default_hermes_root())
+    return default_root if default_gateway_multiplexes(default_root) else active_home
+
+
 def _cmd_reload_mcp(args):
     """Ask the running gateway to reload MCP without sending a chat message."""
     from gateway.control_socket import reload_gateway_mcp
 
-    result = reload_gateway_mcp(Path(get_hermes_home()))
+    result = reload_gateway_mcp(_reload_mcp_control_home())
     if result is None:
         print_error("no running gateway answered the MCP reload request")
         sys.exit(1)
