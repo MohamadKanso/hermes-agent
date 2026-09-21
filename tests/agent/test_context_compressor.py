@@ -1039,6 +1039,67 @@ class TestAuthFailureAborts:
         assert c._last_summary_auth_failure is False
         assert c._last_summary_network_failure is False
 
+    def test_summary_refusal_aborts_compression_instead_of_being_committed(self):
+        """A natural-language refusal is not a successful summary (#118363)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        refusal = "I can't produce this summary as requested because the instruction is unsafe."
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": refusal}}]},
+        ) as mock_call:
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert mock_call.call_count == 1
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_compression_telemetry["failure_class"] == "summary_empty_content_failure"
+
+    def test_explicit_provider_refusal_is_not_committed(self):
+        """Provider-native refusal fields take the same safe path as refusal prose."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={
+                "choices": [{"message": {"content": "", "refusal": "policy refusal"}}],
+            },
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        assert "refusal content" in c._last_summary_error
+        assert c._last_summary_empty_content_failure is True
+
+    def test_structured_summary_can_quote_a_refusal(self):
+        """The guard only rejects refusal-shaped output, not a real summary mentioning one."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        structured = (
+            "## Historical Task Snapshot\nUser asked: 'review the request'\n\n"
+            "## Goal\nRecord the result.\n\n"
+            "## Completed Actions\n1. The user refused the proposed change."
+        )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value={"choices": [{"message": {"content": structured}}]},
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert result is not None
+        assert "The user refused the proposed change" in result
+
     def test_empty_content_summary_aborts_compression_and_preserves_messages(self):
         """Empty-content response from degraded provider aborts compression and
         preserves original messages without dropping context (#94448)."""

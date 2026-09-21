@@ -150,6 +150,51 @@ def _response_finish_reason(response: Any) -> str:
         return ""
 
 
+_SUMMARY_REFUSAL_PREFIX_RE = re.compile(
+    r"^\s*(?:sorry[,:]?\s+)?(?:i|we)\s+(?:can(?:not|['’]t)|could(?:not|['’]t)|"
+    r"won(?:not|['’]t)|will\s+not|must\s+decline|am\s+unable\s+to|"
+    r"am\s+not\s+able\s+to|refuse\s+to)\b"
+    r"|^\s*(?:i['’]?m|i am)\s+(?:unable|not\s+able)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_summary_refusal(content: str) -> bool:
+    """Return True for a refusal-only response, not a summary that quotes one.
+
+    Models sometimes answer the summarizer with a natural-language refusal even
+    though the transport reports a normal ``stop``. Requiring a refusal opener
+    plus summary/checkpoint wording near the start keeps this guard narrow: a
+    valid structured summary can still describe a refusal in the conversation.
+    """
+    text = " ".join(str(content or "").split())
+    if not _SUMMARY_REFUSAL_PREFIX_RE.match(text):
+        return False
+    return any(term in text[:400].casefold() for term in ("summary", "summarize", "checkpoint"))
+
+
+def _response_refusal_text(response: Any) -> str:
+    """Read an explicit provider refusal from dict- or object-shaped responses."""
+    try:
+        if isinstance(response, dict):
+            choices = response.get("choices") or []
+            first = choices[0] if choices else None
+            message = first.get("message") if isinstance(first, dict) else None
+        else:
+            choices = getattr(response, "choices", None) or []
+            first = choices[0] if choices else None
+            message = getattr(first, "message", None) if first is not None else None
+        if isinstance(message, dict):
+            refusal = message.get("refusal")
+        else:
+            refusal = getattr(message, "refusal", None)
+        if isinstance(refusal, dict):
+            refusal = refusal.get("message") or refusal.get("reason") or refusal.get("text")
+        return refusal.strip() if isinstance(refusal, str) else ""
+    except Exception:
+        return ""
+
+
 # Marker for a length-stopped (PARTIAL) summary; the except-branch classifier keys
 # on this exact substring, so keep raise sites and classifier in sync.
 # RuntimeError marker raised when the summarizer's generation stopped on the output-token cap
@@ -655,7 +700,9 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(
-            m in err for m in ("empty content", "llm returned none response", "llm returned invalid response")
+            m in err for m in (
+                "empty content", "refusal content", "llm returned none response", "llm returned invalid response",
+            )
         ),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
@@ -3574,6 +3621,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
         where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
+        if _response_refusal_text(response) or _looks_like_summary_refusal(content):
+            raise RuntimeError(
+                f"Context compression LLM returned refusal content {where}"
+            )
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
