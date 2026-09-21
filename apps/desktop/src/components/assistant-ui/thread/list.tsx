@@ -488,11 +488,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const groups = useMemo(() => buildGroups(structuralSignature), [structuralSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
 
-  // use-stick-to-bottom owns scrollTop (single writer): follow while locked,
-  // escape on user scroll-up, re-lock at bottom. Snap instantly, not spring — a
-  // spring can't tell live-token growth from a session-switch bulk relayout, and
-  // chasing the latter reads as the view scrolling to random spots before
-  // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
+  // use-stick-to-bottom remains the primary scroll owner: follow while locked,
+  // escape on user scroll-up, re-lock at bottom. the narrow resize fallback
+  // below only closes the frame where live content grows before the library's
+  // own resize bookkeeping catches up.
   const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
@@ -836,19 +835,83 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    const restoreResizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
+      const clearance = content.querySelector('[data-slot="aui_composer-clearance"]')
+
+      return {
+        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight
+      }
+    }
+
+    let previousResizeMetrics = restoreResizeMetrics()
+    let previousScrollTop = el.scrollTop
+    let userScrolledUp = false
+    let followsStreamingContent = false
+
     const update = () => {
+      const state = threadScrollStateFromMetrics(el)
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+
+      // use-stick-to-bottom's target intentionally leaves a one-pixel gap.
+      // ignore that programmatic adjustment, but treat any larger upward move
+      // as reading intent even when it still sits inside the sticky band.
+      if (el.scrollTop < previousScrollTop && distanceFromBottom > 1) {
+        userScrolledUp = true
+      } else if (el.scrollTop > previousScrollTop && state.kind === 'bottom') {
+        userScrolledUp = false
+      }
+
+      previousScrollTop = el.scrollTop
+      followsStreamingContent = state.kind === 'bottom' && !userScrolledUp
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     }
 
+    const followContentGrowth = () => {
+      const nextResizeMetrics = restoreResizeMetrics()
+
+      const transcriptGrew = shouldReapplyFrozenThreadScrollOffset(
+        THREAD_SCROLL_BOTTOM,
+        true,
+        previousResizeMetrics,
+        nextResizeMetrics
+      )
+
+      previousResizeMetrics = nextResizeMetrics
+
+      // use-stick-to-bottom also follows resize changes, but its bookkeeping
+      // can leave one painted frame behind while a live response grows. Use
+      // the same transcript-only metric as restore handling so composer
+      // clearance changes never pull a reader to the bottom.
+      if (transcriptGrew && followsStreamingContent && !hasTranscriptTextSelection(el)) {
+        el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
+      }
+
+      update()
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        userScrolledUp = true
+        followsStreamingContent = false
+      }
+    }
+
+    // seed the lock from the position the restore loop actually applied. an
+    // offset restore must never be mistaken for a bottom-following transcript.
+    update()
     el.addEventListener('scroll', update, { passive: true })
-    const observer = new ResizeObserver(update)
+    el.addEventListener('wheel', onWheel, { passive: true })
+    const observer = new ResizeObserver(followContentGrowth)
     observer.observe(content)
 
     return () => {
       el.removeEventListener('scroll', update)
+      el.removeEventListener('wheel', onWheel)
       observer.disconnect()
     }
-  }, [contentRef, paneVisible, scrollRef])
+  }, [contentRef, paneVisible, scrollRef, sessionKey])
 
   // Persist the live position on app close, so a reading position survives a
   // quit without a session switch (the switch cleanup below only runs on
