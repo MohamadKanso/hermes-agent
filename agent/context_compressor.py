@@ -151,7 +151,9 @@ def _response_finish_reason(response: Any) -> str:
 
 
 _SUMMARY_REFUSAL_PREFIX_RE = re.compile(
-    r"^\s*(?:sorry[,:]?\s+)?(?:i|we)\s+(?:can(?:not|['’]t)|could(?:not|['’]t)|"
+    r"^\s*(?:(?:sorry|i['’]?m\s+sorry|i\s+am\s+sorry|"
+    r"i\s+apologi[sz]e|as\s+an\s+ai)[,:]?\s+)?(?:but\s+)?(?:i|we)\s+"
+    r"(?:can(?:not|['’]t)|could(?:not|['’]t)|"
     r"won(?:not|['’]t)|will\s+not|must\s+decline|am\s+unable\s+to|"
     r"am\s+not\s+able\s+to|refuse\s+to)\b"
     r"|^\s*(?:i['’]?m|i am)\s+(?:unable|not\s+able)\b",

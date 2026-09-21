@@ -152,6 +152,10 @@ class MicroCompactionMixin:
             logger.info("micro-summarization returned empty content")
             return None
 
+        if _cc()._response_refusal_text(response) or _cc()._looks_like_summary_refusal(content):
+            logger.info("micro-summarization returned refusal content")
+            return None
+
         from agent.agent_runtime_helpers import strip_think_blocks
         return strip_think_blocks(None, content).strip() or None
 

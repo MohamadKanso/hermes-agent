@@ -18,6 +18,7 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -43,6 +44,26 @@ def _compressor(summary="ROLLING SUMMARY") -> ContextCompressor:
     # Stand in for the auxiliary summarizer LLM.
     cc._micro_summarize_one = lambda _text: summary
     return cc
+
+
+def _real_micro_compressor() -> ContextCompressor:
+    cc = ContextCompressor(
+        model="test-model",
+        threshold_percent=0.75,
+        protect_first_n=1,
+        protect_last_n=2,
+        quiet_mode=True,
+        config_context_length=40960,
+        provider="test",
+    )
+    cc._micro_compact_enabled = True
+    return cc
+
+
+def _micro_response(content: str, refusal: str | None = None) -> SimpleNamespace:
+    message = SimpleNamespace(content=content, refusal=refusal)
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice])
 
 
 def _conversation(exchanges: int = 6) -> list:
@@ -307,6 +328,48 @@ class TestMicroCompaction:
 
         assert result == messages
         assert cc._micro_compact_consecutive_failures == 1
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            "I'm sorry, but I can't produce this summary.",
+            "I apologize, but I cannot produce this summary.",
+            "As an AI, I cannot produce this summary.",
+        ],
+    )
+    def test_refusal_does_not_delete_source_exchange(self, refusal):
+        cc = _real_micro_compressor()
+        messages = _conversation()
+        assert cc._next_exchange(messages) is not None
+        cursor_before = cc._micro_compact_cursor
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=_micro_response(refusal),
+        ):
+            result = cc._micro_compact(list(messages))
+
+        assert result == messages
+        assert cc._micro_compact_cursor == cursor_before
+        assert cc._micro_compact_rolling_summary == ""
+        assert _summary_markers(result) == []
+
+    def test_provider_refusal_does_not_delete_source_exchange(self):
+        cc = _real_micro_compressor()
+        messages = _conversation()
+        assert cc._next_exchange(messages) is not None
+        cursor_before = cc._micro_compact_cursor
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=_micro_response("fallback summary", refusal="policy refusal"),
+        ):
+            result = cc._micro_compact(list(messages))
+
+        assert result == messages
+        assert cc._micro_compact_cursor == cursor_before
+        assert cc._micro_compact_rolling_summary == ""
+        assert _summary_markers(result) == []
 
     def test_poison_exchange_is_skipped_after_repeated_failures(self):
         """A repeatedly unsummarizable exchange must not stall every turn."""
