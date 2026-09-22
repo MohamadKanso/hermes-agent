@@ -261,7 +261,12 @@ def _json_post(url: str, token: str, body: dict, timeout: float):
 
 
 def _read_json_response(response, *, context: str):
-    """Decode a successful JSON response without leaking parser exceptions."""
+    """decode a successful JSON response without leaking parser exceptions.
+
+    transport errors from response.read() intentionally stay with the caller
+    so each endpoint can add context. callers must invoke this helper inside
+    their transport exception handling.
+    """
     try:
         return json.loads(response.read().decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
