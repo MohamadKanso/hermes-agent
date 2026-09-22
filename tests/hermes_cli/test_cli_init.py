@@ -773,17 +773,26 @@ class TestPluginToolsetStartupValidation:
     """
 
     @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def _init_toolsets(
+        monkeypatch, toolsets, *, registry, plugin_keys, portable_mcp_names=(), mcp_servers=None
+    ):
         import cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
         monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
-        monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
+        config = {"agent": {}}
+        if mcp_servers is not None:
+            config["mcp_servers"] = mcp_servers
+        monkeypatch.setattr(_cli_mod, "CLI_CONFIG", config)
         monkeypatch.setattr(
             "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
             lambda: set(plugin_keys),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_portable_mcp_server_names_nowait",
+            lambda: set(portable_mcp_names),
         )
         stub._init_toolsets(list(toolsets))
         return stub, printed
@@ -810,5 +819,30 @@ class TestPluginToolsetStartupValidation:
         assert "voice_stak" in printed[0]
         assert "voice_stack" not in printed[0]
 
+    def test_portable_mcp_server_is_not_flagged(self, monkeypatch):
+        server_name = "agent-plugin-snyk-8cb0f11d__sn"
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            ["terminal", server_name, "lightpanda"],
+            registry={"terminal"},
+            plugin_keys=set(),
+            portable_mcp_names={server_name},
+            mcp_servers={"lightpanda": {}},
+        )
 
+        assert printed == []
+
+    def test_near_miss_portable_mcp_name_still_warns(self, monkeypatch):
+        server_name = "agent-plugin-snyk-8cb0f11d__sn"
+        near_miss = f"{server_name}2"
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            [near_miss],
+            registry=set(),
+            plugin_keys=set(),
+            portable_mcp_names={server_name},
+        )
+
+        assert len(printed) == 1
+        assert near_miss in printed[0]
 
