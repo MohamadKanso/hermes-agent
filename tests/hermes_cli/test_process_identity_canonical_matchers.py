@@ -4,6 +4,8 @@ defer to the canonical matchers instead of argv substrings (root AGENTS.md proce
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hermes_cli.dashboard_procs import _is_desktop_local_serve_cmdline
@@ -18,6 +20,15 @@ LOOPBACK = "--host 127.0.0.1 --port 0"
 CMDLINES = [
     ("python -m hermes_cli.main serve " + LOOPBACK, "serve", True, True),
     ("python -m hermes_cli.main dashboard", "dashboard", False, True),
+    ("python /venv/bin/hermes serve " + LOOPBACK, "serve", True, False),
+    ("python3.13 /venv/bin/hermes serve " + LOOPBACK, "serve", True, False),
+    ("python -X utf8 /venv/bin/hermes serve " + LOOPBACK, "serve", True, False),
+    ("python -W default -m hermes_cli.main serve " + LOOPBACK, "serve", True, True),
+    ("python -x /venv/bin/hermes serve " + LOOPBACK, "serve", True, False),
+    (r"C:\Python\python.exe C:\Hermes\.venv\Scripts\hermes.exe dashboard", "dashboard", False, False),
+    ("python hermes_cli/main.py serve " + LOOPBACK, "serve", True, False),
+    ("python /tmp/hermes-script.py dashboard", None, False, False),
+    ("python /opt/not-hermes_cli/main.py serve " + LOOPBACK, None, False, False),
     ("/venv/bin/hermes serve --isolated --host=127.0.0.1 --port=0 --ssh-owner-nonce abc", "serve", True, False),
     (r"C:\hermes\.venv\Scripts\hermes.exe serve --host 100.106.105.2 --port 9119", "serve", False, False),
     ("hermes.exe dashboard", "dashboard", False, False),
@@ -27,6 +38,11 @@ CMDLINES = [
     ("hermes --reasoning high dashboard " + LOOPBACK, "dashboard", False, False),
     ("hermes gateway run --replace", "gateway", False, False),
     ("hermes chat --model serve", "chat", False, False),
+    ("python worker.py hermes serve " + LOOPBACK, None, False, False),
+    ("python worker.py /venv/bin/hermes serve " + LOOPBACK, None, False, False),
+    ("python worker.py -m hermes_cli.main serve " + LOOPBACK, None, False, False),
+    ("python -X utf8 worker.py hermes serve " + LOOPBACK, None, False, False),
+    ("python -W default worker.py -m hermes_cli.main serve " + LOOPBACK, None, False, False),
     ("python observer.py serve " + LOOPBACK, None, False, False),
 ]
 
@@ -38,7 +54,12 @@ def test_kill_and_relaunch_predicates_agree_with_the_canonical_holder_matcher(
     # Desktop-local reap (a KILL path): serve + loopback + ephemeral port, decided by tokens.
     assert _is_desktop_local_serve_cmdline(cmdline) is reapable
     # Windows updater backend classifier (taskkill /T on orphans): canonical subcommand AND Desktop spawn shape.
-    assert _is_backend_argv(cmdline.lower()) is desktop_backend
+    assert _is_backend_argv(cmdline) is desktop_backend
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Python module names resolve case-insensitively on Windows")
+def test_module_entrypoint_is_case_sensitive_on_posix():
+    assert _hermes_holder_subcommand("python -m HERMES_CLI.MAIN serve") is None
 
 
 def test_desktop_local_serve_spares_fixed_port_and_remote_hosts():
