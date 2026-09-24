@@ -811,6 +811,7 @@ export function useMainApp(gw: GatewayClient) {
       // the final lock wakes the blocked tool before its rpc response arrives
       // reserve before sending each answer so an early completion is covered
       turnController.persistedToolLabels.add(label)
+      patchOverlayState({ clarify: { ...clarify, answerPending: true } })
 
       rpc<ClarifyLockResponse>('clarify.lock', {
         answer,
@@ -819,6 +820,15 @@ export function useMainApp(gw: GatewayClient) {
       }).then(r => {
         if (!r) {
           turnController.persistedToolLabels.delete(label)
+          appendMessage({
+            role: 'system',
+            text: formatAbandonedClarifyBatch(
+              clarify.questions!,
+              clarify.answers ?? {},
+              'answer could not be confirmed'
+            )
+          })
+          patchOverlayState({ clarify: null })
 
           return
         }
@@ -827,6 +837,10 @@ export function useMainApp(gw: GatewayClient) {
 
         if (r.status === 'expired') {
           turnController.persistedToolLabels.delete(label)
+          appendMessage({
+            role: 'system',
+            text: formatAbandonedClarifyBatch(clarify.questions!, clarify.answers ?? {}, 'timed out')
+          })
           patchOverlayState({ clarify: null })
 
           return
@@ -834,7 +848,7 @@ export function useMainApp(gw: GatewayClient) {
 
         if ((r.remaining ?? []).length > 0) {
           turnController.persistedToolLabels.delete(label)
-          patchOverlayState({ clarify: { ...clarify, answers } })
+          patchOverlayState({ clarify: { ...clarify, answerPending: false, answers } })
 
           return
         }

@@ -1666,8 +1666,23 @@ describe('createGatewayEventHandler', () => {
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
   })
 
-  it('consumes the answered clarify marker before a later clarify completes', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
+  it('does not mark a batch answer as timed out when tool completion arrives first', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchOverlayState({
+      clarify: {
+        answers: { q1: 'red' },
+        answerPending: true,
+        choices: null,
+        question: '',
+        questions: [
+          { qid: 'q1', question: 'Which colour for zeta?' },
+          { qid: 'q2', question: 'Which colour for eta?' }
+        ],
+        requestId: 'req-batch'
+      }
+    })
 
     turnController.recordToolStart('clar-answered', 'clarify', 'Which colour for zeta?')
     // the final answer reserves this before the backend can emit tool.complete
@@ -1680,7 +1695,14 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().streamPendingTools).toEqual([])
     expect(getTurnState().tools).toEqual([])
     expect(turnController.persistedToolLabels.has(toolTrailLabel('clarify'))).toBe(false)
+    expect(getOverlayState().clarify?.answerPending).toBe(true)
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
 
+    onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
+
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+
+    patchOverlayState({ clarify: null })
     turnController.recordToolStart('clar-next', 'clarify', 'Which colour for eta?')
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-next' }, type: 'tool.complete' } as any)
 
