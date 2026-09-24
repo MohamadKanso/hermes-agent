@@ -8,7 +8,12 @@ import {
 } from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
-import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import {
+  getOverlayState,
+  patchOverlayState,
+  resetOverlayState,
+  updateClarifyForRequest
+} from '../app/overlayStore.js'
 import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -1708,6 +1713,23 @@ describe('createGatewayEventHandler', () => {
 
     expect(getTurnState().streamPendingTools).toHaveLength(1)
     expect(getTurnState().streamPendingTools[0]).toContain('Which colour for eta?')
+  })
+
+  it('does not let a late clarify response change a newer prompt', () => {
+    const newerPrompt = {
+      choices: ['A', 'B'],
+      question: 'Choose for the next step?',
+      requestId: 'req-new'
+    }
+    patchOverlayState({ clarify: newerPrompt })
+
+    expect(updateClarifyForRequest('req-old', () => null)).toBe(false)
+    expect(getOverlayState().clarify).toEqual(newerPrompt)
+
+    expect(
+      updateClarifyForRequest('req-new', current => ({ ...current, answerPending: true }))
+    ).toBe(true)
+    expect(getOverlayState().clarify).toEqual({ ...newerPrompt, answerPending: true })
   })
 
   it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {

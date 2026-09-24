@@ -57,7 +57,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, patchOverlayState, updateClarifyForRequest } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -810,8 +810,11 @@ export function useMainApp(gw: GatewayClient) {
 
       // the final lock wakes the blocked tool before its rpc response arrives
       // reserve before sending each answer so an early completion is covered
+      if (!updateClarifyForRequest(clarify.requestId, current => ({ ...current, answerPending: true }))) {
+        return
+      }
+
       turnController.persistedToolLabels.add(label)
-      patchOverlayState({ clarify: { ...clarify, answerPending: true } })
 
       rpc<ClarifyLockResponse>('clarify.lock', {
         answer,
@@ -819,7 +822,12 @@ export function useMainApp(gw: GatewayClient) {
         request_id: clarify.requestId
       }).then(r => {
         if (!r) {
-          turnController.persistedToolLabels.delete(label)
+          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
+
+          if (isCurrentRequest) {
+            turnController.persistedToolLabels.delete(label)
+          }
+
           appendMessage({
             role: 'system',
             text: formatAbandonedClarifyBatch(
@@ -828,7 +836,6 @@ export function useMainApp(gw: GatewayClient) {
               'answer could not be confirmed'
             )
           })
-          patchOverlayState({ clarify: null })
 
           return
         }
@@ -836,27 +843,43 @@ export function useMainApp(gw: GatewayClient) {
         const answers = { ...(clarify.answers ?? {}), [qid]: answer }
 
         if (r.status === 'expired') {
-          turnController.persistedToolLabels.delete(label)
+          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
+
+          if (isCurrentRequest) {
+            turnController.persistedToolLabels.delete(label)
+          }
+
           appendMessage({
             role: 'system',
             text: formatAbandonedClarifyBatch(clarify.questions!, clarify.answers ?? {}, 'timed out')
           })
-          patchOverlayState({ clarify: null })
 
           return
         }
 
         if ((r.remaining ?? []).length > 0) {
-          turnController.persistedToolLabels.delete(label)
-          patchOverlayState({ clarify: { ...clarify, answerPending: false, answers } })
+          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, current => ({
+            ...current,
+            answerPending: false,
+            answers: { ...(current.answers ?? {}), [qid]: answer }
+          }))
+
+          if (isCurrentRequest) {
+            turnController.persistedToolLabels.delete(label)
+          }
 
           return
         }
 
         // Batch complete: persist the whole Q&A set as one user-visible
         // block (mirrors the single-question trail + answer lines).
-        turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
-        patchTurnState({ turnTrail: turnController.turnTools })
+        const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
+
+        if (isCurrentRequest) {
+          turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+          patchTurnState({ turnTrail: turnController.turnTools })
+        }
+
         appendMessage({
           kind: 'trail',
           role: 'system',
@@ -869,8 +892,10 @@ export function useMainApp(gw: GatewayClient) {
             .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
             .join('\n')
         })
-        patchUiState({ status: 'running…' })
-        patchOverlayState({ clarify: null })
+
+        if (isCurrentRequest) {
+          patchUiState({ status: 'running…' })
+        }
       })
     },
     [appendMessage, overlay.clarify, rpc]
