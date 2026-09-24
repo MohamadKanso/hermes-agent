@@ -833,9 +833,14 @@ class TurnController {
     }
 
     this.recordTodos(todos)
+    const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName ?? 'tool'
+    const alreadyPersisted = this.persistedToolLabels.delete(toolTrailLabel(name))
     const lines = this.completeTool(toolId, fallbackName, summary, duration, resultText, labels)
 
-    this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
+    if (!alreadyPersisted) {
+      this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
+    }
+
     this.flushPendingToolsIntoLastSegment()
     this.publishToolState()
   }

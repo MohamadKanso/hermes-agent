@@ -748,10 +748,19 @@ export function useMainApp(gw: GatewayClient) {
 
       const label = toolTrailLabel('clarify')
 
+      if (answer) {
+        // the backend may finish the tool before this response call returns
+        turnController.persistedToolLabels.add(label)
+      }
+
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
       if (!respondToServerRequest(clarify.requestId, { answer })) {
+        if (answer) {
+          turnController.persistedToolLabels.delete(label)
+        }
+
         // The request already expired (request.cancel raced the keystroke): nothing to answer.
         patchOverlayState({ clarify: null })
 
@@ -760,7 +769,6 @@ export function useMainApp(gw: GatewayClient) {
 
       {
         if (answer) {
-          turnController.persistedToolLabels.add(label)
           appendMessage({
             kind: 'trail',
             role: 'system',
@@ -798,24 +806,34 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      const label = toolTrailLabel('clarify')
+
+      // the final lock wakes the blocked tool before its rpc response arrives
+      // reserve before sending each answer so an early completion is covered
+      turnController.persistedToolLabels.add(label)
+
       rpc<ClarifyLockResponse>('clarify.lock', {
         answer,
         question_id: qid,
         request_id: clarify.requestId
       }).then(r => {
         if (!r) {
+          turnController.persistedToolLabels.delete(label)
+
           return
         }
 
         const answers = { ...(clarify.answers ?? {}), [qid]: answer }
 
         if (r.status === 'expired') {
+          turnController.persistedToolLabels.delete(label)
           patchOverlayState({ clarify: null })
 
           return
         }
 
         if ((r.remaining ?? []).length > 0) {
+          turnController.persistedToolLabels.delete(label)
           patchOverlayState({ clarify: { ...clarify, answers } })
 
           return
@@ -823,11 +841,8 @@ export function useMainApp(gw: GatewayClient) {
 
         // Batch complete: persist the whole Q&A set as one user-visible
         // block (mirrors the single-question trail + answer lines).
-        const label = toolTrailLabel('clarify')
-
         turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
         patchTurnState({ turnTrail: turnController.turnTools })
-        turnController.persistedToolLabels.add(label)
         appendMessage({
           kind: 'trail',
           role: 'system',

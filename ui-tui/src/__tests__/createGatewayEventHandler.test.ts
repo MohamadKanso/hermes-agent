@@ -14,7 +14,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
-import { estimateTokensRough } from '../lib/text.js'
+import { estimateTokensRough, toolTrailLabel } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
 // Mock the external-URL opener so the billing.step_up.verification test can
@@ -1664,6 +1664,28 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
+  })
+
+  it('consumes the answered clarify marker before a later clarify completes', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    turnController.recordToolStart('clar-answered', 'clarify', 'Which colour for zeta?')
+    // the final answer reserves this before the backend can emit tool.complete
+    turnController.persistedToolLabels.add(toolTrailLabel('clarify'))
+
+    onEvent(
+      { payload: { name: 'clarify', summary: 'answered', tool_id: 'clar-answered' }, type: 'tool.complete' } as any
+    )
+
+    expect(getTurnState().streamPendingTools).toEqual([])
+    expect(getTurnState().tools).toEqual([])
+    expect(turnController.persistedToolLabels.has(toolTrailLabel('clarify'))).toBe(false)
+
+    turnController.recordToolStart('clar-next', 'clarify', 'Which colour for eta?')
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-next' }, type: 'tool.complete' } as any)
+
+    expect(getTurnState().streamPendingTools).toHaveLength(1)
+    expect(getTurnState().streamPendingTools[0]).toContain('Which colour for eta?')
   })
 
   it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {
