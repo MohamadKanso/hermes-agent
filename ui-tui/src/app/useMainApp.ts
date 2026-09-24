@@ -57,7 +57,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState, updateClarifyForRequest } from './overlayStore.js'
+import { $overlayState, beginClarifyAnswer, patchOverlayState, updateClarifyForRequest } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -810,7 +810,7 @@ export function useMainApp(gw: GatewayClient) {
 
       // the final lock wakes the blocked tool before its rpc response arrives
       // reserve before sending each answer so an early completion is covered
-      if (!updateClarifyForRequest(clarify.requestId, current => ({ ...current, answerPending: true }))) {
+      if (!beginClarifyAnswer(clarify.requestId)) {
         return
       }
 

@@ -10,6 +10,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import {
   getOverlayState,
+  beginClarifyAnswer,
   patchOverlayState,
   resetOverlayState,
   updateClarifyForRequest
@@ -1730,6 +1731,26 @@ describe('createGatewayEventHandler', () => {
       updateClarifyForRequest('req-new', current => ({ ...current, answerPending: true }))
     ).toBe(true)
     expect(getOverlayState().clarify).toEqual({ ...newerPrompt, answerPending: true })
+  })
+
+  it('allows only one batch answer lock at a time', () => {
+    patchOverlayState({
+      clarify: {
+        choices: null,
+        question: '',
+        questions: [{ choices: ['red', 'blue'], qid: 'q1', question: 'Which colour?' }],
+        requestId: 'req-batch'
+      }
+    })
+
+    expect(beginClarifyAnswer('req-batch')).toBe(true)
+    expect(beginClarifyAnswer('req-batch')).toBe(false)
+    expect(getOverlayState().clarify?.answerPending).toBe(true)
+
+    expect(
+      updateClarifyForRequest('req-batch', current => ({ ...current, answerPending: false }))
+    ).toBe(true)
+    expect(beginClarifyAnswer('req-batch')).toBe(true)
   })
 
   it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {

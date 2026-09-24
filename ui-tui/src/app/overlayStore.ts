@@ -162,6 +162,23 @@ export const updateClarifyForRequest = (
   return updated
 }
 
+/** Start a batch answer only when this request has no answer lock in flight. */
+export const beginClarifyAnswer = (requestId: string): boolean => {
+  let started = false
+
+  patchOverlayState(state => {
+    if (state.clarify?.requestId !== requestId || state.clarify.answerPending) {
+      return state
+    }
+
+    started = true
+
+    return { ...state, clarify: { ...state.clarify, answerPending: true } }
+  })
+
+  return started
+}
+
 /** Full reset — used by session/turn teardown and tests. */
 export const resetOverlayState = () => $overlayState.set(buildOverlayState())
 
