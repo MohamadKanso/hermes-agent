@@ -44,6 +44,12 @@ CMDLINES = [
     ("python -X utf8 worker.py hermes serve " + LOOPBACK, None, False, False),
     ("python -W default worker.py -m hermes_cli.main serve " + LOOPBACK, None, False, False),
     ("python observer.py serve " + LOOPBACK, None, False, False),
+    # #121156: `hermes serve` is a PREFIX of other words, and `hermes` is a common session/host name.
+    ("herdr --session hermes server", None, False, False),
+    ("hermes serverless --port 9119", "serverless", False, False),
+    ("hermes service status", "service", False, False),
+    # A shebang-launched checkout entry point: argv[0] is the script, with no interpreter token.
+    ("/opt/hermes/hermes_cli/main.py serve " + LOOPBACK, "serve", True, False),
 ]
 
 
@@ -55,6 +61,19 @@ def test_kill_and_relaunch_predicates_agree_with_the_canonical_holder_matcher(
     assert _is_desktop_local_serve_cmdline(cmdline) is reapable
     # Windows updater backend classifier (taskkill /T on orphans): canonical subcommand AND Desktop spawn shape.
     assert _is_backend_argv(cmdline) is desktop_backend
+
+
+@pytest.mark.parametrize("cmdline,subcommand,reapable,desktop_backend", CMDLINES)
+def test_dashboard_runtime_parse_agrees_with_the_canonical_holder_matcher(
+        cmdline, subcommand, reapable, desktop_backend):
+    """``_parse_dashboard_runtime`` gates the launchd backend inventory (a kill + kickstart path)
+    and ``--status``: it must claim a cmdline as a backend on exactly the canonical subcommands."""
+    from hermes_cli.main_dashboard import _parse_dashboard_runtime
+
+    runtime = _parse_dashboard_runtime(cmdline)
+    assert (runtime is not None) is (subcommand in ("dashboard", "serve"))
+    if runtime is not None:
+        assert runtime[0] == subcommand
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Python module names resolve case-insensitively on Windows")

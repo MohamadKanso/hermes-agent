@@ -87,8 +87,8 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
                  if pid not in skip and _hermes_holder_subcommand(cmd) in ("dashboard", "serve")]
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
-    # Spawn-ledger augmentation: substring patterns miss profiled launches (`hermes --profile p
-    # serve`); the ledger holds live-verified pids. Unavailable ledger → scan-only.
+    # Spawn-ledger augmentation: argv scanning misses a truncated or unreadable cmdline; the ledger
+    # holds live-verified pids. Unavailable ledger → scan-only.
     with contextlib.suppress(Exception):
         # Every serve/ dashboard registers itself in the machine spawn ledger at startup with live-verified
         # (pid, create_time), so ledger rows are positive identity, not argv guessing. Add any live ledger

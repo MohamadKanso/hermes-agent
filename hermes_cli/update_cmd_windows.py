@@ -235,9 +235,11 @@ def _holder_value_flags() -> frozenset:
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
-    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): accept only a Hermes launcher
-    at argv[0], a Python console script at argv[1], or Python's exact ``-m hermes_cli.main`` entry point. An
-    incidental ``hermes`` token after an unrelated script is not proof that the process runs Hermes.
+    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): the entry point must be
+    argv[0] itself (the ``hermes`` console script or a ``.../hermes_cli/main.py`` shebang launch) or a
+    Python interpreter reaching it via ``-m hermes_cli.main`` / that script path. An incidental ``hermes``
+    token after an unrelated script is not proof that the process runs Hermes — ``herdr --session hermes
+    server`` is a terminal multiplexer, not a backend to kill (#121156).
 
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
     #90778.
@@ -271,41 +273,34 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     if not tokens:
         return None
 
-    first = _basename(tokens[0])
-    if first in ("hermes", "hermes.exe"):
-        entry_idx = 0
-    elif _is_python(tokens[0]):
-        # skip valid python switches, but stop at the first module or script
+    def _python_entry_index() -> int | None:
+        """Index of the Hermes entry token after a ``python`` argv[0], skipping interpreter flags."""
         i = 1
         while i < len(tokens):
             option = _clean(tokens[i])
-            if option == "-m":
-                if i + 1 >= len(tokens) or _clean(tokens[i + 1]) != "hermes_cli.main":
-                    return None
-                entry_idx = i + 1
-                break
-            if option == "-c":
+            if option == "-m":  # only the exact module; `-m dashboard serve` is not Hermes
+                is_entry = i + 1 < len(tokens) and _clean(tokens[i + 1]) == "hermes_cli.main"
+                return i + 1 if is_entry else None
+            if option == "-c":  # inline source: the tokens after it are code, not an argv
                 return None
-            if option in _PYTHON_VALUE_FLAGS:
-                if i + 1 >= len(tokens):
-                    return None
+            if option in _PYTHON_VALUE_FLAGS:  # `-W default`, `-X utf8`: the value is not the script
                 i += 2
                 continue
-            if option.startswith(("-W", "-X")) and len(option) > 2:
-                i += 1
-                continue
-            if option.startswith("--check-hash-based-pycs=") or option in _PYTHON_NO_VALUE_FLAGS:
+            if (option in _PYTHON_NO_VALUE_FLAGS or option.startswith("--check-hash-based-pycs=")
+                    or (option.startswith(("-W", "-X")) and len(option) > 2)):
                 i += 1
                 continue
             if option.startswith("-"):
-                return None
-            entry_idx = _script_entry_index(i)
-            if entry_idx is None:
-                return None
-            break
-        else:
-            return None
-    else:
+                return None  # unknown switch: refuse rather than mistake a value for the script
+            return _script_entry_index(i)  # the first non-flag token is the script — it must be ours
+        return None
+
+    # argv[0] is the entry point itself (the ``hermes`` console script, or a shebang-launched
+    # ``.../hermes_cli/main.py``), else an interpreter that must reach it through -m/a script path.
+    entry_idx = _script_entry_index(0)
+    if entry_idx is None:
+        entry_idx = _python_entry_index() if _is_python(tokens[0]) else None
+    if entry_idx is None:
         return None
 
     value_flags = _holder_value_flags()
