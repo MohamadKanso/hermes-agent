@@ -20,11 +20,6 @@ from hermes_cli.update_cmd_common import _best_effort
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
 _BACKEND_PURPOSES = ("serve", "dashboard")
-_PYTHON_NO_VALUE_FLAGS = frozenset({
-    "-b", "-bb", "-B", "-d", "-E", "-i", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v", "-vv",
-    "-x",
-})
-_PYTHON_VALUE_FLAGS = frozenset({"-W", "-X", "--check-hash-based-pycs"})
 
 
 def _try_call(fn, log_message: str, *log_args, default=None):
@@ -232,6 +227,50 @@ def _holder_value_flags() -> frozenset:
     return _holder_value_flags_cache
 
 
+def _hermes_entry_index(tokens: list[str], *, case_insensitive_paths: bool | None = None) -> int | None:
+    """Index of the token that NAMES the Hermes entry point in *tokens*, or None if this argv isn't Hermes.
+
+    Positional, never a substring scan: the entry point must be ``argv[0]`` itself (the ``hermes``
+    console script, or a shebang-launched ``.../hermes_cli/main.py``), or the module/script a Python
+    interpreter in ``argv[0]`` actually selects. An incidental ``hermes`` token further along the argv
+    proves nothing — ``herdr --session hermes serve`` is a terminal multiplexer, not a backend to kill
+    (#121156) — and ``python -c <src> … -m hermes_cli.main serve`` is an interpreter running inline
+    source whose trailing argv belongs to a LATER spawn, not to this process (#107002).
+
+    The interpreter-option walk is the canonical ``hermes_state_holders._python_execution_target_at``;
+    this module must not hand-roll a second copy of CPython's flag sets (root AGENTS.md). Pure function
+    of data — *case_insensitive_paths* takes the host convention as an argument so the logic is
+    testable off Windows instead of being read off ``os.name`` at the call site.
+    """
+    from hermes_state_holders import _looks_like_python_executable, _python_execution_target_at
+
+    if case_insensitive_paths is None:
+        case_insensitive_paths = os.name == "nt"
+
+    def _is_hermes_script(value: str) -> bool:
+        parts = [part for part in value.replace("\\", "/").split("/") if part]
+        if not parts:
+            return False
+        if parts[-1].lower() in ("hermes", "hermes.exe"):
+            return True
+        tail = [part.lower() for part in parts[-2:]] if case_insensitive_paths else parts[-2:]
+        return tail == ["hermes_cli", "main.py"]
+
+    if not tokens:
+        return None
+    if _is_hermes_script(tokens[0]):
+        return 0
+    if not _looks_like_python_executable(tokens[0].replace("\\", "/")):
+        return None
+    located = _python_execution_target_at(tokens)  # None for ``-c`` inline source, by construction
+    if located is None:
+        return None
+    kind, value, index = located
+    if kind == "module":
+        return index if value == "hermes_cli.main" else None
+    return index if _is_hermes_script(value) else None
+
+
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
@@ -249,60 +288,11 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     except Exception:
         tokens = cmdline.split()
 
-    def _clean(token: str) -> str:
-        return token.strip().strip("\"'")
-
-    def _basename(token: str) -> str:
-        return _clean(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
-
-    def _is_python(token: str) -> bool:
-        # covers python/python3/python3.13 and pythonw, including windows' .exe suffix
-        return re.fullmatch(r"python(?:w|\d+(?:\.\d+)*w?)?(?:\.exe)?", _basename(token)) is not None
-
-    def _script_entry_index(index: int) -> int | None:
-        if index >= len(tokens):
-            return None
-        script = _clean(tokens[index])
-        if _basename(script) in ("hermes", "hermes.exe"):
-            return index
-        script_parts = [part for part in script.replace("\\", "/").split("/") if part]
-        if os.name == "nt":
-            script_parts = [part.lower() for part in script_parts]
-        return index if script_parts[-2:] == ["hermes_cli", "main.py"] else None
-
     if not tokens:
         return None
-
-    def _python_entry_index() -> int | None:
-        """Index of the Hermes entry token after a ``python`` argv[0], skipping interpreter flags."""
-        i = 1
-        while i < len(tokens):
-            option = _clean(tokens[i])
-            if option == "-m":  # only the exact module; `-m dashboard serve` is not Hermes
-                is_entry = i + 1 < len(tokens) and _clean(tokens[i + 1]) == "hermes_cli.main"
-                return i + 1 if is_entry else None
-            if option == "-c":  # inline source: the tokens after it are code, not an argv
-                return None
-            if option in _PYTHON_VALUE_FLAGS:  # `-W default`, `-X utf8`: the value is not the script
-                i += 2
-                continue
-            if (option in _PYTHON_NO_VALUE_FLAGS or option.startswith("--check-hash-based-pycs=")
-                    or (option.startswith(("-W", "-X")) and len(option) > 2)):
-                i += 1
-                continue
-            if option.startswith("-"):
-                return None  # unknown switch: refuse rather than mistake a value for the script
-            return _script_entry_index(i)  # the first non-flag token is the script — it must be ours
-        return None
-
-    # argv[0] is the entry point itself (the ``hermes`` console script, or a shebang-launched
-    # ``.../hermes_cli/main.py``), else an interpreter that must reach it through -m/a script path.
-    entry_idx = _script_entry_index(0)
-    if entry_idx is None:
-        entry_idx = _python_entry_index() if _is_python(tokens[0]) else None
+    entry_idx = _hermes_entry_index([t.strip().strip("\"'") for t in tokens])
     if entry_idx is None:
         return None
-
     value_flags = _holder_value_flags()
     i = entry_idx + 1
     while i < len(tokens):
@@ -1262,6 +1252,35 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     return relaunched, unmapped_relaunched
 
 
+_RELAUNCH_VERIFY_TIMEOUT_S = 30.0
+
+
+def _pending_relaunch_pids(profiles: dict, unmapped: list, pid_exists) -> list[int]:
+    """Old PIDs a restart watcher is still waiting on, sorted; empty when every relaunch can have run.
+
+    ``_spawn_gateway_restart_watcher`` respawns the gateway only once the PID it was handed is gone,
+    so while any of them is alive the relaunch has provably not started yet. Pure function of data
+    (``pid_exists`` is injected) so the decision is testable off Windows.
+    """
+    candidates = [int(pid) for pid in profiles.values()]
+    candidates += [int(entry["pid"]) for entry in unmapped if entry.get("argv") and entry.get("pid")]
+    return sorted({pid for pid in candidates if pid > 0 and pid_exists(pid)})
+
+
+def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists) -> float:
+    """Liveness budget for the post-relaunch poll.
+
+    The base window assumes the watchers respawn immediately. When an old PID is still alive the
+    watcher is still in its wait loop, so the poll must reach at least the watcher's own deadline —
+    otherwise ``hermes update`` declares "no stable gateway process appeared" for a gateway that was
+    never scheduled to appear inside the window (#107002).
+    """
+    from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
+    if not _pending_relaunch_pids(profiles, unmapped, pid_exists):
+        return _RELAUNCH_VERIFY_TIMEOUT_S
+    return float(GATEWAY_RESTART_WATCHER_TIMEOUT_S) + _RELAUNCH_VERIFY_TIMEOUT_S
+
+
 def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
     """Gate success on the shared liveness poll: a truthy launch only proves the watcher was created.
 
@@ -1269,8 +1288,10 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     ``all_profiles=True`` covers the fleet. Vouched PIDs are persisted so a death AFTER updater exit
     is reported by the next CLI invocation (best-effort)."""
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
+        from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
-    ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=30.0, all_profiles=True)
+    timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
+    ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=timeout_s, all_profiles=True)
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)

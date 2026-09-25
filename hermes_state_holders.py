@@ -80,12 +80,26 @@ def _looks_like_python_executable(program: str) -> bool:
 
 def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
     """Return the Python module or script selected by interpreter options."""
+    located = _python_execution_target_at(argv)
+    return None if located is None else (located[0], located[1])
+
+
+def _python_execution_target_at(argv: Sequence[str]) -> Optional[Tuple[str, str, int]]:
+    """``(kind, value, index)`` for the Python module/script *argv* runs, else None.
+
+    *index* is the position of the argv token that NAMES the target (the ``-mpkg`` token itself for
+    the attached spelling), so callers that need the program's own argv tail can slice from
+    ``index + 1`` without re-deriving the interpreter-option walk. ``python -c <src> …`` returns None:
+    everything after ``-c`` is data for a program the inline source may spawn LATER, never this
+    process's identity (#107002). This walk is the single canonical one — flag sets live here, never
+    hand-rolled a second time (root AGENTS.md).
+    """
     index = 1
     while index < len(argv):
         arg = argv[index]
         if arg == "--":
             index += 1
-            return ("script", argv[index]) if index < len(argv) else None
+            return ("script", argv[index], index) if index < len(argv) else None
         if arg in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
             index += 2
             continue
@@ -106,16 +120,16 @@ def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
                     return None
                 if option == "m":
                     if attached:
-                        return "module", attached
+                        return "module", attached, index
                     index += 1
-                    return ("module", argv[index]) if index < len(argv) else None
+                    return ("module", argv[index], index) if index < len(argv) else None
                 if option in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                     consumed_next = not attached
                     break
                 option_index += 1
             index += 2 if consumed_next else 1
             continue
-        return "script", arg
+        return "script", arg, index
     return None
 
 
