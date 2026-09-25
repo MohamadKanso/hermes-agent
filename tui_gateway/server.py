@@ -382,15 +382,21 @@ _start_idle_reaper()
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
-def _launch_state_db_path() -> Path:
-    """Launch profile's ``state.db`` at call time: the patched ``_hermes_home`` when a test changed
+def _launch_home() -> Path:
+    """The launch profile's home at call time: the patched ``_hermes_home`` when a test changed
     it, else the live process home — resolved through :func:`get_process_hermes_home`, which honours
     ``HERMES_HOME`` but ignores the context-local override. The desktop multiplex cron ticker sets
-    that override per profile at startup, and a first touch inside a foreign window would bind this
-    process-wide handle to another profile's ``state.db`` (#102526). Resolving here rather than at
-    import time lets a harness that redirects ``HERMES_HOME`` after import be honoured (#112692)."""
+    that override per profile at startup, and a first touch inside a foreign window would bind
+    process-wide launch state (the shared ``state.db`` handle, the launch ``.env`` secrets) to
+    another profile (#102526). Resolving here rather than at import time lets a harness that
+    redirects ``HERMES_HOME`` after import be honoured (#112692)."""
     home = _hermes_home if _hermes_home != _HERMES_HOME_AT_IMPORT else get_process_hermes_home()
-    return Path(home) / "state.db"
+    return Path(home)
+
+
+def _launch_state_db_path() -> Path:
+    """Launch profile's ``state.db`` (see :func:`_launch_home`)."""
+    return _launch_home() / "state.db"
 
 
 def _get_db():
@@ -1713,7 +1719,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         "metadata when answering questions about what model/provider is active.]")
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
-    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
@@ -1726,7 +1732,10 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
             _ensure_session_db_row(session)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
-                db.append_message(session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                from agent.context_compressor import _DB_PERSISTED_MARKER
+                entry["_row_id"] = db.append_message(
+                    session_id=session_key, role="user", content=marker, display_kind="model_switch")
+                entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
 
@@ -2183,8 +2192,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
     }
     with contextlib.suppress(Exception):
-        from hermes_cli import __version__, __release_date__
-        info.update(version=__version__, release_date=__release_date__)
+        from hermes_cli import __release_date__
+        from hermes_cli.version_info import get_version_info
+
+        info.update(version=get_version_info().base_version, release_date=__release_date__)
     live_agent = agent is not None and not sess.get("_compute_host_active")
     if live_agent:
         with contextlib.suppress(Exception):
@@ -3166,7 +3177,7 @@ def _append_spawn_tree_index(session_dir, entry: dict) -> None:
 def _read_spawn_tree_index(session_dir) -> list[dict]:
     out: list[dict] = []
     try:
-        with (session_dir / _SPAWN_TREE_INDEX).open("r", encoding="utf-8") as f:
+        with (session_dir / _SPAWN_TREE_INDEX).open("r", encoding="utf-8-sig") as f:
             for line in f:
                 if line := line.strip():
                     with contextlib.suppress(json.JSONDecodeError):

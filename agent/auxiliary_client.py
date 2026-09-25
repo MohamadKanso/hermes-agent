@@ -143,7 +143,7 @@ _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """httpx ``verify`` for an aux base_url, mirroring the main client (per-provider ``ssl_ca_cert`` /
-    ``ssl_verify``, ``HERMES_CA_BUNDLE`` / ``SSL_CERT_FILE``); any failure → httpx default (``True``)."""
+    ``ssl_verify``; otherwise the OS trust store); any failure → httpx default (``True``)."""
     try:
         from agent.ssl_verify import resolve_httpx_verify
         from hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly
@@ -932,16 +932,16 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 
 
 # Vercel AI Gateway attribution (HTTP-Referer → referrerUrl, X-Title → appName).
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 _AI_GATEWAY_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
 }
 
 # Nous Portal attribution extra_body. Tags come from agent.portal_tags so the client= marker
-# tracks hermes_cli.__version__ — never inline a literal here.
+# tracks the canonical base version — never inline a literal here.
 from agent.portal_tags import nous_portal_tags as _nous_portal_tags
 
 
@@ -2103,13 +2103,27 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
+def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
+    """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
+    it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
+    key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
+    token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
+    override = _codex_base_url_override()
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
-            return token
+            if override:
+                return token, override
+            # Same route rule as the chat path (row URL, else ``model.base_url``); never empty.
+            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            return token, _codex_pool_route_base_url(_pool_runtime_base_url(entry))
+    # No usable pool token: auth.json only (re-selecting could pair another row's key with the default).
+    return _read_codex_singleton_token(), override or _CODEX_AUX_BASE_URL
+
+
+def _read_codex_singleton_token() -> Optional[str]:
+    """The profile's auth.json Codex access token (expired JWTs skipped), else None."""
     try:
         from hermes_cli.auth import _read_codex_tokens
         access_token = _read_codex_tokens().get("tokens", {}).get("access_token")
@@ -2927,16 +2941,9 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    codex_token = _pool_runtime_api_key(entry) if pool_present else None
-    codex_override = _codex_base_url_override()
-    if codex_token:
-        base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = codex_override or _CODEX_AUX_BASE_URL
+    codex_token, base_url = _resolve_codex_credential_and_base()
+    if not codex_token:
+        return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
@@ -3275,6 +3282,11 @@ def _is_connection_error(exc: Exception) -> bool:
     ))
 
 
+def _exc_http_status(exc: Exception) -> Any:
+    """HTTP status on the exception itself or on its ``response`` (None when neither carries one)."""
+    return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """One-off transport blip worth retrying on the SAME provider: connection/stream-close errors plus pure 5xx/408.
 
@@ -3282,7 +3294,7 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     """
     if _is_connection_error(exc):
         return True
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    status = _exc_http_status(exc)
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
@@ -3462,6 +3474,25 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
         return False
     msg = str(exc).lower()
     return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
+
+
+def _is_statusless_structured_provider_error(exc: Exception) -> bool:
+    """Detect a structured provider failure that has no HTTP status.
+
+    OpenAI-compatible relays may commit SSE with status 200, then send an
+    OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` with
+    ``body=data["error"]`` — the INNER error object or a bare string (an
+    ``{"error": ...}`` wrapper is accepted too). Any non-empty structured error in
+    that status-less shape is a route failure; ordinary HTTP errors keep their
+    existing status-based classifiers, and message text alone is insufficient.
+    """
+    if _exc_http_status(exc) is not None:
+        return False
+    body = getattr(exc, "body", None)
+    err = body.get("error") if isinstance(body, dict) and "error" in body else body
+    if isinstance(err, str):
+        return bool(err.strip())
+    return isinstance(err, dict) and any(err.get(k) for k in ("type", "code", "message"))
 
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
@@ -4976,11 +5007,10 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token = _read_codex_access_token()
+        codex_token, base_url = _resolve_codex_credential_and_base()
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
-        base_url = _codex_base_url_override() or _CODEX_AUX_BASE_URL
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
@@ -6793,7 +6823,8 @@ def _managed_local_netloc() -> str:
         return cached
     try:
         from hermes_cli.local_runtime.supervisor import state_path
-        raw = state_path().read_text(encoding="utf-8")
+
+        raw = state_path().read_text(encoding="utf-8-sig")
         base = str((json.loads(raw) or {}).get("base_url", ""))
         netloc = urlparse(base).netloc.lower()
     except Exception:
@@ -7330,6 +7361,8 @@ _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
     (_is_invalid_aux_response_error, "invalid provider response"),
+    # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
+    (_is_statusless_structured_provider_error, "structured provider error"),
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
@@ -7354,7 +7387,7 @@ def _param_rung_accepts(exc: Exception) -> bool:
     A 429 on the retry is the credential/provider-fallback rungs' job, so it falls
     through too (the pre-ladder max_tokens rung accepted rate limits)."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or _is_rate_limit_error(exc)
+            or _is_rate_limit_error(exc) or _is_statusless_structured_provider_error(exc)
             or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
             # Parameter rungs chain in any order (a reasoning-strip retry can 400 on temperature,
             # a temperature-strip retry on max_tokens), and a route-gating 400 after a strip still
@@ -8056,13 +8089,12 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
         raw = str(raw) if raw else ""
     content = raw.strip()
     if content:
-        # Mirrors _strip_think_blocks
-        cleaned = re.sub(
-            r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"
-            r".*?"
-            r"</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>",
-            "", content, flags=re.DOTALL | re.IGNORECASE,
-        ).strip()
+        # Same precompiled closed-pair patterns as strip_think_blocks.
+        from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
+        cleaned = content
+        for pattern in _REASONING_BLOCK_PATTERNS:
+            cleaned = pattern.sub("", cleaned)
+        cleaned = cleaned.strip()
         if cleaned:
             return cleaned
     # Content is empty or reasoning-only — try structured reasoning fields
