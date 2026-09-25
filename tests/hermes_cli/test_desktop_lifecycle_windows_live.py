@@ -29,7 +29,7 @@ import pytest
 from tests.live_process_fixtures import (
     HERMES_ENTRYPOINT_MARKER,
     SLEEPER_MARKER,
-    hermes_module_root,
+    hermes_backend_spawn_kwargs,
     sleeper_script_path,
 )
 
@@ -85,18 +85,22 @@ def hermes_backend():
     ``sleeper`` deliberately cannot serve here. It spawns ``python sleeper.py <tail>``, and a Hermes
     tail behind an unrelated script is precisely the lookalike the identity matchers must refuse
     (#121156) — so a holder standing in for a REAL backend has to carry the real spawn shape, with no
-    inert tail. ``cwd`` is the stub package root, so ``-m`` resolves to a sleeping ``hermes_cli.main``
-    and never to the repo's own (which would launch an actual backend).
+    inert tail.
+
+    ``-P`` plus the PYTHONPATH in ``hermes_backend_spawn_kwargs`` makes ``-m`` resolve to a sleeping
+    stub rather than the repo's real entry point, while CWD stays at the project root so the Windows
+    venv holder scan still keeps the process (it drops a ``-m hermes_cli.main`` holder whose command
+    line and CWD are both outside the project root).
     """
     procs: list[subprocess.Popen] = []
-    root = hermes_module_root()
+    spawn_kwargs = hermes_backend_spawn_kwargs(PROJECT_ROOT)
 
     def _spawn(*subcommand: str) -> subprocess.Popen:
         p = subprocess.Popen(
-            [sys.executable, "-m", "hermes_cli.main", *subcommand],
-            cwd=root,
+            [sys.executable, "-P", "-m", "hermes_cli.main", *subcommand],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **spawn_kwargs,
         )
         procs.append(p)
         assert _wait_until(lambda: _argv_visible(p.pid, HERMES_ENTRYPOINT_MARKER)), "backend argv never visible"

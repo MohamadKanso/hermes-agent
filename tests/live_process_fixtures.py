@@ -13,6 +13,7 @@ fixture therefore no longer stands in for anything.
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -51,8 +52,18 @@ def hermes_module_root() -> str:
 
     A fixture standing in for the DESKTOP BACKEND must therefore carry the Desktop's real spawn
     shape, ``python -m hermes_cli.main <subcommand>``, with no inert tail at all. This returns a
-    throwaway package root holding a sleeping ``hermes_cli.main``; spawn with ``cwd`` set to it so
-    ``sys.path[0]`` selects this stub and never the real repo (which would start a real backend).
+    throwaway package root holding a sleeping ``hermes_cli.main``.
+
+    Spawn it with ``-P`` and ``PYTHONPATH`` set to this root, and leave ``cwd`` at the project root
+    (see :func:`hermes_backend_spawn_kwargs`). Both halves matter and pull against each other:
+
+    * ``-P`` keeps the interpreter from prepending ``cwd`` to ``sys.path``, so ``-m hermes_cli.main``
+      resolves to this sleeping stub instead of the repo's real entry point -- which would launch an
+      actual backend inside the E2E.
+    * ``cwd`` must nevertheless stay at the project root, because the Windows venv holder scan only
+      keeps a ``-m hermes_cli.main`` process whose command line or CWD is under the project root
+      (``_detect_venv_python_processes``). Spawning from the stub directory makes the holder invisible
+      to the very scan the fixture exists to feed.
     """
     global _hermes_module_root
     if _hermes_module_root is None:
@@ -63,3 +74,14 @@ def hermes_module_root() -> str:
         (package / "main.py").write_text(_SLEEPER_SOURCE, encoding="utf-8")
         _hermes_module_root = root
     return str(_hermes_module_root)
+
+
+def hermes_backend_spawn_kwargs(project_root) -> dict:
+    """``subprocess.Popen`` kwargs that make ``-m hermes_cli.main`` a visible, stubbed backend.
+
+    Keeps the two constraints from :func:`hermes_module_root` in one place so a caller cannot satisfy
+    one and silently break the other.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = hermes_module_root()
+    return {"cwd": str(project_root), "env": env}
