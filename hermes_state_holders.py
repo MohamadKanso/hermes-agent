@@ -73,7 +73,10 @@ def _looks_like_python_executable(program: str) -> bool:
     name = os.path.basename(program).lower().removesuffix(".exe")
     for prefix in ("python", "pypy"):
         if name.startswith(prefix):
-            suffix = name[len(prefix) :]
+            # ``pythonw``/``pythonw.exe`` is the console-less Windows launcher — same interpreter,
+            # and the shape a GUI-spawned Hermes backend actually carries, so it must classify as
+            # Python or its argv reads as "not Hermes" and the holder goes unrecognised (#121156).
+            suffix = name[len(prefix) :].removesuffix("w")
             return not suffix or all(char.isdigit() or char == "." for char in suffix)
     return False
 
