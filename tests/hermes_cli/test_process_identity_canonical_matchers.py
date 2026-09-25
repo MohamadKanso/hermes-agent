@@ -81,6 +81,35 @@ def test_module_entrypoint_is_case_sensitive_on_posix():
     assert _hermes_holder_subcommand("python -m HERMES_CLI.MAIN serve") is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Python module names resolve case-insensitively on Windows")
+def test_live_argv_is_not_case_folded_before_the_canonical_matcher():
+    """The reap paths classify the LIVE argv; case-folding it there would re-open the bug class.
+
+    ``_orphaned_desktop_backend_pids`` / ``_handoff_reapable_backend_pids`` read the running
+    process's argv through ``_live_argv`` and hand it to ``_is_backend_argv`` (which feeds
+    ``taskkill /T``). ``_hermes_holder_subcommand`` matches ``-m hermes_cli.main`` case-sensitively,
+    so a lower-casing ``_live_argv`` would make a non-Hermes ``-m HERMES_CLI.MAIN`` argv reapable —
+    exactly the false-positive identity the canonical matcher exists to prevent (#121156).
+    """
+    from hermes_cli.update_cmd_windows import _live_argv
+
+    class _FakePsutil:
+        class NoSuchProcess(Exception):
+            pass
+
+        @staticmethod
+        def Process(_pid):
+            class _P:
+                @staticmethod
+                def cmdline():
+                    return ["python", "-m", "HERMES_CLI.MAIN", "serve"]
+            return _P()
+
+    argv = _live_argv(_FakePsutil, 4242, "python -m HERMES_CLI.MAIN serve")
+    assert argv == "python -m HERMES_CLI.MAIN serve"
+    assert _is_backend_argv(argv) is False
+
+
 def test_desktop_local_serve_spares_fixed_port_and_remote_hosts():
     assert not _is_desktop_local_serve_cmdline("hermes serve --host 100.106.105.2 --port 9119 --skip-build")
     assert not _is_desktop_local_serve_cmdline("hermes serve --host 127.0.0.1 --port 9119")

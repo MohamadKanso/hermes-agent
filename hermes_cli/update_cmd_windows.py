@@ -533,7 +533,13 @@ def _is_backend_argv(argv: str) -> bool:
 
 
 def _live_argv(psutil, pid, cmdline: str) -> str | None:
-    """Current argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited."""
+    """Current argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited.
+
+    Returned VERBATIM, never case-folded: ``_hermes_holder_subcommand`` matches the ``-m
+    hermes_cli.main`` entry token case-sensitively (a POSIX module name is case-sensitive), so
+    lowering here would let ``-m HERMES_CLI.MAIN`` — not a Hermes process — be classified as a
+    Desktop backend and fed to ``taskkill /T``. The classifier lowers what it must itself (#121156).
+    """
     argv = cmdline
     try:
         argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
@@ -541,7 +547,7 @@ def _live_argv(psutil, pid, cmdline: str) -> str | None:
         return None
     except Exception:
         pass
-    return argv.lower()
+    return argv
 
 
 def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[tuple[int, int]] | None:
