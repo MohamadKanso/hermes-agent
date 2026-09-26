@@ -750,7 +750,7 @@ export function useMainApp(gw: GatewayClient) {
 
       if (answer) {
         // the backend may finish the tool before this response call returns
-        turnController.persistedToolLabels.add(label)
+        turnController.reservePersistedToolLabel(label, clarify.requestId)
       }
 
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
@@ -758,7 +758,7 @@ export function useMainApp(gw: GatewayClient) {
 
       if (!respondToServerRequest(clarify.requestId, { answer })) {
         if (answer) {
-          turnController.persistedToolLabels.delete(label)
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
         }
 
         // The request already expired (request.cancel raced the keystroke): nothing to answer.
@@ -814,7 +814,7 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      turnController.persistedToolLabels.add(label)
+      turnController.reservePersistedToolLabel(label, clarify.requestId)
 
       rpc<ClarifyLockResponse>('clarify.lock', {
         answer,
@@ -824,7 +824,7 @@ export function useMainApp(gw: GatewayClient) {
         if (!r) {
           updateClarifyForRequest(clarify.requestId, () => null)
 
-          turnController.persistedToolLabels.delete(label)
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
 
           appendMessage({
             role: 'system',
@@ -843,7 +843,7 @@ export function useMainApp(gw: GatewayClient) {
         if (r.status === 'expired') {
           updateClarifyForRequest(clarify.requestId, () => null)
 
-          turnController.persistedToolLabels.delete(label)
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
 
           appendMessage({
             role: 'system',
@@ -860,7 +860,7 @@ export function useMainApp(gw: GatewayClient) {
             answers: { ...(current.answers ?? {}), [qid]: answer }
           }))
 
-          turnController.persistedToolLabels.delete(label)
+          turnController.releasePersistedToolLabel(label, clarify.requestId)
 
           return
         }

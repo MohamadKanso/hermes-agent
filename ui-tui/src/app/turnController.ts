@@ -155,6 +155,7 @@ class TurnController {
 
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
+  private persistedToolLabelOwners = new Map<string, Set<string>>()
   private reasoningSegmentIndex: null | number = null
   private interimBoundaryIndex: null | number = null
   private activityId = 0
@@ -162,6 +163,51 @@ class TurnController {
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
+
+  reservePersistedToolLabel(label: string, owner: string) {
+    const owners = this.persistedToolLabelOwners.get(label) ?? new Set<string>()
+    owners.add(owner)
+    this.persistedToolLabelOwners.set(label, owners)
+    this.persistedToolLabels.add(label)
+  }
+
+  releasePersistedToolLabel(label: string, owner: string) {
+    const owners = this.persistedToolLabelOwners.get(label)
+
+    if (!owners?.delete(owner)) {
+      return
+    }
+
+    if (owners.size > 0) {
+      return
+    }
+
+    this.persistedToolLabelOwners.delete(label)
+    this.persistedToolLabels.delete(label)
+  }
+
+  consumePersistedToolLabel(label: string) {
+    const owners = this.persistedToolLabelOwners.get(label)
+
+    if (owners?.size) {
+      const [owner] = owners
+      owners.delete(owner)
+
+      if (owners.size === 0) {
+        this.persistedToolLabelOwners.delete(label)
+        this.persistedToolLabels.delete(label)
+      }
+
+      return true
+    }
+
+    return this.persistedToolLabels.delete(label)
+  }
+
+  clearPersistedToolLabels() {
+    this.persistedToolLabelOwners.clear()
+    this.persistedToolLabels.clear()
+  }
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -587,7 +633,7 @@ class TurnController {
     this.pendingSegmentTools = []
     this.segmentMessages = []
     this.turnTools = []
-    this.persistedToolLabels.clear()
+    this.clearPersistedToolLabels()
 
     // Real turn end: surface any notice held back while busy.
     this.flushPendingNotice()
@@ -689,7 +735,7 @@ class TurnController {
     this.idle()
     this.clearReasoning()
     this.turnTools = []
-    this.persistedToolLabels.clear()
+    this.clearPersistedToolLabels()
     this.bufRef = ''
     this.interrupted = false
     patchTurnState({ activity: [], outcome: '' })
@@ -833,8 +879,9 @@ class TurnController {
     }
 
     this.recordTodos(todos)
-    const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName ?? 'tool'
-    const alreadyPersisted = this.persistedToolLabels.delete(toolTrailLabel(name))
+    const activeTool = this.activeTools.find(tool => tool.id === toolId)
+    const name = activeTool?.name ?? fallbackName ?? 'tool'
+    const alreadyPersisted = activeTool ? this.consumePersistedToolLabel(toolTrailLabel(name)) : false
     const lines = this.completeTool(toolId, fallbackName, summary, duration, resultText, labels)
 
     if (!alreadyPersisted) {
@@ -935,7 +982,7 @@ class TurnController {
     this.segmentMessages = []
     this.turnTools = []
     this.toolTokenAcc = 0
-    this.persistedToolLabels.clear()
+    this.clearPersistedToolLabels()
     // Session boundary: drop notice state so session A's sticky can't bleed
     // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
     this.clearNoticeState()
@@ -992,7 +1039,7 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
-    this.persistedToolLabels.clear()
+    this.clearPersistedToolLabels()
     // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
     // (credits.usage, 50/75/90%) and the one-time "grant spent" transition
     // (credits.grant_spent) should show once, then get out of the way — not camp the
