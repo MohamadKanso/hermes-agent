@@ -14,6 +14,7 @@ import {
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
   remoteProfileQueryScope,
+  shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
@@ -65,6 +66,13 @@ test('pinned registry aggregation requires the selected profile backend for per-
   assert.equal(hasPinnedRegistrySessionSource('local', 'work', sources, false), true)
   assert.equal(hasPinnedRegistrySessionSource('local', 'missing', sources, false), false)
   assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'any-profile', sources), true)
+})
+
+test('unscoped aggregates include local rows when the primary is remote', () => {
+  assert.equal(shouldIncludeLocalRegistrySessionSource(null, false), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource('server', false), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource('local', true), true)
+  assert.equal(shouldIncludeLocalRegistrySessionSource(null, true), false)
 })
 
 test('remote sidebar slices all follow the selected profile', () => {

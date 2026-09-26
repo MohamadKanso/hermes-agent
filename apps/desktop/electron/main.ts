@@ -445,6 +445,7 @@ import {
   pathWithRemoteOwnerScope,
   type RegistrySessionSource,
   remoteProfileQueryScope,
+  shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
@@ -16830,7 +16831,10 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
 
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
-    const registrySources = await pooledRegistrySessionSources(Boolean(registryConnectionId))
+
+    const registrySources = await pooledRegistrySessionSources(
+      shouldIncludeLocalRegistrySessionSource(registryConnectionId, !globalRemoteActive())
+    )
 
     if (remoteProfiles.length === 0 && registrySources.length === 0) {
       return undefined // no remote profiles and no connected registry gateways → local fast path
@@ -16868,7 +16872,10 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
   // remote correctness is preserved.
   if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
     const remoteProfiles = configuredRemoteProfileNames()
-    const registrySources = await pooledRegistrySessionSources(Boolean(registryConnectionId))
+
+    const registrySources = await pooledRegistrySessionSources(
+      shouldIncludeLocalRegistrySessionSource(registryConnectionId, !globalRemoteActive())
+    )
 
     if (remoteProfiles.length === 0 && registrySources.length === 0) {
       return undefined // local fast path → batched endpoint's single DB open
