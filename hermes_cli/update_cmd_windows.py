@@ -104,7 +104,7 @@ def _self_and_non_gateway_ancestor_pids(psutil) -> set[int]:
 def _cmdline_or_empty(proc) -> str:
     """Joined argv of a psutil process, ``""`` when it can't be read."""
     try:
-        return " ".join(proc.cmdline() or [])
+        return subprocess.list2cmdline(proc.cmdline() or [])
     except Exception:
         return ""
 
@@ -504,7 +504,7 @@ def _live_argv(psutil, pid, cmdline: str) -> str | None:
     """
     argv = cmdline
     try:
-        argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        argv = subprocess.list2cmdline(psutil.Process(int(pid)).cmdline()) or cmdline
     except psutil.NoSuchProcess:
         return None
     except Exception:

@@ -110,6 +110,34 @@ def test_live_argv_is_not_case_folded_before_the_canonical_matcher():
     assert _is_backend_argv(argv) is False
 
 
+def test_live_argv_preserves_interpreter_paths_with_spaces():
+    """a real windows venv can live below a path containing spaces."""
+    from hermes_cli.update_cmd_windows import _live_argv
+
+    class _FakePsutil:
+        class NoSuchProcess(Exception):
+            pass
+
+        @staticmethod
+        def Process(_pid):
+            class _P:
+                @staticmethod
+                def cmdline():
+                    return [
+                        r"C:\\Program Files\\Hermes\\venv\\Scripts\\pythonw.exe",
+                        "-m",
+                        "hermes_cli.main",
+                        "serve",
+                    ]
+
+            return _P()
+
+    argv = _live_argv(_FakePsutil, 4242, "pythonw.exe -m hermes_cli.main serve")
+    assert argv is not None
+    assert _hermes_holder_subcommand(argv) == "serve"
+    assert _is_backend_argv(argv) is True
+
+
 def test_desktop_local_serve_spares_fixed_port_and_remote_hosts():
     assert not _is_desktop_local_serve_cmdline("hermes serve --host 100.106.105.2 --port 9119 --skip-build")
     assert not _is_desktop_local_serve_cmdline("hermes serve --host 127.0.0.1 --port 9119")
