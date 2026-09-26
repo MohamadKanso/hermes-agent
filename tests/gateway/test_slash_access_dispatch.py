@@ -176,6 +176,25 @@ async def test_secondary_profile_slash_policy_uses_its_own_config():
     assert runner._check_slash_access(pinned, "restart") is not None
 
 
+def test_ungated_secondary_profile_cannot_weaken_a_gated_launch_profile():
+    runner = _make_runner(
+        multiplex_profiles=True,
+        platform_extra={"allow_admin_from": ["launch-admin"]},
+    )
+    runner._profile_configs["beta"] = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, extra={}),
+        }
+    )
+
+    source = _make_source(user_id="user", profile="beta")
+    policy = runner._slash_access_policy_for_source(source)
+    assert policy.enabled
+    assert not policy.is_admin("user")
+    assert runner._check_slash_access(source, "restart") is not None
+    assert runner._resume_caller_is_admin(source) is False
+
+
 @pytest.mark.asyncio
 async def test_missing_secondary_profile_config_fails_closed():
     """a missing routed-profile config must not inherit the launch profile's open policy."""

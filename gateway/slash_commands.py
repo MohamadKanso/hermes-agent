@@ -206,14 +206,15 @@ class GatewaySlashCommandsMixin(
             from gateway.session_identity import identity_of
             identity = identity_of(source)
             profile_name = getattr(identity, "runtime_profile", None)
-        except Exception:
+        except Exception as exc:
+            logger.warning("could not resolve the routed profile for slash access: %s", exc)
             return fail_closed
         profile_name = (profile_name or getattr(source, "profile", None) or "").strip()
         if not profile_name:
-            profile_name = (getattr(self, "_primary_profile_name", None) or "").strip()
+            profile_name = (getattr(self, "_primary_profile_name", None) or "default").strip()
 
-        primary_profile = (getattr(self, "_primary_profile_name", None) or "").strip()
-        if profile_name and profile_name == primary_profile:
+        primary_profile = (getattr(self, "_primary_profile_name", None) or "default").strip()
+        if profile_name == primary_profile:
             profile_config = config
         elif profile_name:
             profile_config = (getattr(self, "_profile_configs", None) or {}).get(profile_name)
@@ -222,7 +223,13 @@ class GatewaySlashCommandsMixin(
 
         if profile_config is None:
             return fail_closed
-        return policy_for_source(profile_config, source)
+        policy = policy_for_source(profile_config, source)
+        # keep a gated launch profile from being weakened by an ungated
+        # secondary profile because disabled means allow everything
+        launch_policy = policy_for_source(config, source)
+        if launch_policy.enabled and not policy.enabled:
+            return fail_closed
+        return policy
 
     def _cached_agent_for(self, session_key: str, *, lockless_fallback: bool = False):
         """Peek the cached AIAgent for *session_key* without evicting it, or None. Entries are
@@ -641,8 +648,9 @@ class GatewaySlashCommandsMixin(
         the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
         never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
         source = event.source
-        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; the resolver preserves the legacy ungated behavior outside multiplexing.
+        # Partially-constructed runners (``GatewayRunner.__new__`` in tests) may
+        # have no ``config``; the resolver preserves legacy behavior outside
+        # multiplexing.
         policy = self._slash_access_policy_for_source(source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
