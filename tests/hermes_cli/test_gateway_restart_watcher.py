@@ -34,7 +34,7 @@ def test_detached_watcher_respects_process_identity(
     watcher = calls.pop()[0][2]
     monkeypatch.setattr(sys, "argv", [sys.executable, "12345", sys.executable, "-c", "pass"])
     ticks = iter((0.0, 121.0))
-    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks, 121.0))
 
     if not respawns:
         with pytest.raises(SystemExit) as exit_info:
