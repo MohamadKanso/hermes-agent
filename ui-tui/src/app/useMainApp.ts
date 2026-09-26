@@ -822,11 +822,9 @@ export function useMainApp(gw: GatewayClient) {
         request_id: clarify.requestId
       }).then(r => {
         if (!r) {
-          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
+          updateClarifyForRequest(clarify.requestId, () => null)
 
-          if (isCurrentRequest) {
-            turnController.persistedToolLabels.delete(label)
-          }
+          turnController.persistedToolLabels.delete(label)
 
           appendMessage({
             role: 'system',
@@ -843,11 +841,9 @@ export function useMainApp(gw: GatewayClient) {
         const answers = { ...(clarify.answers ?? {}), [qid]: answer }
 
         if (r.status === 'expired') {
-          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
+          updateClarifyForRequest(clarify.requestId, () => null)
 
-          if (isCurrentRequest) {
-            turnController.persistedToolLabels.delete(label)
-          }
+          turnController.persistedToolLabels.delete(label)
 
           appendMessage({
             role: 'system',
@@ -858,15 +854,13 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         if ((r.remaining ?? []).length > 0) {
-          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, current => ({
+          updateClarifyForRequest(clarify.requestId, current => ({
             ...current,
             answerPending: false,
             answers: { ...(current.answers ?? {}), [qid]: answer }
           }))
 
-          if (isCurrentRequest) {
-            turnController.persistedToolLabels.delete(label)
-          }
+          turnController.persistedToolLabels.delete(label)
 
           return
         }
