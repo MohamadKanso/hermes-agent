@@ -321,6 +321,14 @@ export function hasPinnedRegistrySessionSource(
   return source.backends.some(({ profileLabel }) => (profileLabel || 'default') === selectedProfile)
 }
 
+/** include the local registry source when the primary aggregate is remote */
+export function shouldIncludeLocalRegistrySessionSource(
+  connectionId: string | null | undefined,
+  baseCoversLocal = true
+): boolean {
+  return Boolean(String(connectionId ?? '').trim()) || !baseCoversLocal
+}
+
 type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
 
 /** Read one registry source without sending a page larger than the backend cap. */
