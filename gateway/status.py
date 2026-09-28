@@ -576,6 +576,10 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
         for position, letter in enumerate(cluster):
             if letter == "c":
                 return index
+            # -m can carry its module in the same token, and module names may contain "c".
+            if letter == "m":
+                index += 1 if cluster[position + 1 :] else 2
+                break
             if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                 index += 1 if cluster[position + 1 :] else 2
                 break

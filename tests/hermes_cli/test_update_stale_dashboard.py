@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -158,6 +159,26 @@ class TestFindStaleDashboardPids:
         monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
 
         assert _find_stale_dashboard_pids() == [12344, 12345, 12346]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-table scan")
+    def test_process_scan_recovers_argv_boundaries_for_paths_with_spaces(self, monkeypatch):
+        import hermes_cli.process_identity as process_identity
+        import hermes_cli.update_cmd_windows as update_cmd_windows
+
+        pid = 12347
+        argv = ["/Applications/Hermes Agent/venv/bin/python3", "-m", "hermes_cli.main", "serve"]
+        flattened = " ".join(argv)
+        proc = MagicMock()
+        proc.cmdline.return_value = argv
+        fake_psutil = SimpleNamespace(Process=lambda _pid: proc)
+
+        monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: fake_psutil)
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", _ps_runner(_ps_line(pid, flattened)))
+        monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
+
+        assert _find_stale_dashboard_pids() == [pid]
 
 
 
