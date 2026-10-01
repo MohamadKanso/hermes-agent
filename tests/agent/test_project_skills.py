@@ -146,8 +146,21 @@ class TestWorktreeTrust:
         )
         return main, wt
 
-    def test_worktree_inherits_trust_from_main_repo(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("paths", [
+        "absolute",
+        "relative",
+        pytest.param("symlink", marks=pytest.mark.require_symlinks),
+    ])
+    def test_worktree_inherits_trust_from_main_repo(self, tmp_path, monkeypatch, paths):
         main, wt = self._setup_git_worktree(tmp_path)
+        if paths == "relative":
+            gitdir = Path((wt / ".git").read_text().split(":", 1)[1].strip())
+            (wt / ".git").write_text(f"gitdir: {os.path.relpath(gitdir, wt)}\n")
+            (gitdir / "gitdir").write_text(os.path.relpath(wt / ".git", gitdir))
+        elif paths == "symlink":
+            alias = tmp_path / "worktree-alias"
+            alias.symlink_to(wt, target_is_directory=True)
+            wt = alias
         home = tmp_path / ".hermes"
         (home / "skills").mkdir(parents=True)
         config = home / "config.yaml"
@@ -159,6 +172,7 @@ class TestWorktreeTrust:
         su._external_dirs_cache_clear()
 
         assert su.find_project_root() == wt.resolve()
+        assert su._canonical_git_root(wt) == main.resolve()
         assert su.is_project_root_trusted(wt) is True
         dirs = su.get_project_skills_dirs()
         assert (wt / ".hermes" / "skills").resolve() in dirs
@@ -202,6 +216,67 @@ class TestWorktreeTrust:
 
         assert su._canonical_git_root(forged) is None
         assert su.is_project_root_trusted(forged) is False
+
+    @pytest.mark.parametrize("metadata_location", [
+        "external",
+        "nested",
+        "wrong-parent",
+        pytest.param("symlink", marks=pytest.mark.require_symlinks),
+    ])
+    def test_worktree_metadata_must_be_registered_in_common_gitdir(
+        self, tmp_path, monkeypatch, metadata_location
+    ):
+        main, _ = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _trust(home / "config.yaml", main)
+
+        forged = tmp_path / "unregistered"
+        skill_dir = forged / ".hermes" / "skills" / "unregistered-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: unregistered-skill\ndescription: test skill\n---\nbody\n"
+        )
+        common = main / ".git"
+        locations = {
+            "external": forged / "metadata",
+            "nested": common / "worktrees" / "nested" / "metadata",
+            "wrong-parent": common / "other" / "metadata",
+            "symlink": forged / "metadata",
+        }
+        metadata = locations[metadata_location]
+        metadata.mkdir(parents=True)
+        (metadata / "gitdir").write_text(str(forged / ".git"))
+        (metadata / "commondir").write_text(str(common))
+        target = metadata
+        if metadata_location == "symlink":
+            target = common / "worktrees" / "redirected"
+            target.symlink_to(metadata, target_is_directory=True)
+        (forged / ".git").write_text(f"gitdir: {target}\n")
+        monkeypatch.chdir(forged)
+
+        assert su._canonical_git_root(forged) is None
+        assert su.is_project_root_trusted(forged) is False
+        assert su.get_project_skills_dirs() == []
+        assert su.get_untrusted_project_skills_root() == (forged.resolve(), 1)
+
+    @pytest.mark.require_symlinks
+    def test_git_file_alias_cannot_borrow_another_worktrees_registration(
+        self, tmp_path, monkeypatch
+    ):
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _trust(home / "config.yaml", main)
+        forged = tmp_path / "unregistered"
+        forged.mkdir()
+        (forged / ".git").symlink_to(wt / ".git")
+
+        assert su._canonical_git_root(forged) is None
+        assert su.is_project_root_trusted(forged) is False
+        assert su.is_project_root_trusted(wt) is True
 
     def test_malformed_git_metadata_rejected(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
@@ -286,19 +361,8 @@ class TestWorktreeTrust:
         assert su.is_project_root_trusted(wt) is True
 
     def test_home_as_canonical_repo_rejected(self, tmp_path, monkeypatch):
-        fake_home = tmp_path / "fake-home"
-        fake_home.mkdir()
+        fake_home, wt = self._setup_git_worktree(tmp_path)
         monkeypatch.setattr(Path, "home", lambda: fake_home)
-
-        # Mock worktree pointing back to fake_home
-        wt = tmp_path / "home-wt"
-        wt.mkdir()
-        gitdir_path = tmp_path / "fake-gitdir-home"
-        gitdir_path.mkdir()
-        (wt / ".git").write_text(f"gitdir: {gitdir_path}\n")
-        (gitdir_path / "gitdir").write_text(str(wt / ".git"))
-        (gitdir_path / "commondir").write_text(str(fake_home / ".git"))
-        (fake_home / ".git").mkdir()
 
         assert su._canonical_git_root(wt) is None
         assert su.is_project_root_trusted(wt) is False

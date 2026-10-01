@@ -472,13 +472,14 @@ def _canonical_git_root(root: Path) -> Optional[Path]:
     2. The target gitdir exists, is a directory, and contains a ``gitdir`` file
        whose back-reference resolves exactly to ``<root>/.git``.
     3. The target gitdir contains a ``commondir`` file resolving to an existing
-       common git directory.
+       common git directory and is a direct child of its ``worktrees`` directory.
     4. The resolved canonical repository root exists and is not the home directory.
 
     Returns the resolved canonical repository root Path if verified, else None.
     """
     try:
-        dot_git = Path(root) / ".git"
+        root = Path(root).resolve()
+        dot_git = root / ".git"
         if not dot_git.is_file():
             return None
         content = dot_git.read_text(encoding="utf-8", errors="replace").strip()
@@ -491,7 +492,7 @@ def _canonical_git_root(root: Path) -> Optional[Path]:
         if not gitdir_path.is_dir():
             return None
 
-        # Verify mutual back-reference (prevents forged .git files from borrowing trust)
+        # the backreference must identify this checkout rather than a .git alias
         backref_file = gitdir_path / "gitdir"
         if not backref_file.is_file():
             return None
@@ -499,7 +500,7 @@ def _canonical_git_root(root: Path) -> Optional[Path]:
         if not backref_raw:
             return None
         backref_path = (gitdir_path / backref_raw.splitlines()[0].strip()).resolve()
-        if backref_path != dot_git.resolve():
+        if backref_path != dot_git:
             return None
 
         # Resolve common directory to determine the canonical repo root
@@ -511,6 +512,11 @@ def _canonical_git_root(root: Path) -> Optional[Path]:
             return None
         commondir_path = (gitdir_path / commondir_raw.splitlines()[0].strip()).resolve()
         if not commondir_path.is_dir():
+            return None
+
+        # backreferences only establish trust when the common repo owns the metadata
+        # keep the expected parent unresolved so symlinks cannot redirect registration
+        if gitdir_path.parent != commondir_path / "worktrees":
             return None
 
         # For standard non-bare repos, commondir is <repo>/.git, so repo root is parent.
