@@ -1875,12 +1875,20 @@ def _fallback_auth_value_is_usable(value: Any) -> bool:
 
 def _fallback_client_has_auth(client: Any) -> bool:
     """Check client auth without treating Hermes' local/keyless placeholders as keys."""
+    # OpenAI stores a rotating credential source separately until the next request.
+    if callable(getattr(client, "_api_key_provider", None)):
+        return True
     if _fallback_auth_value_is_usable(getattr(client, "api_key", None)):
         return True
     headers = getattr(client, "default_headers", None)
     try:
         for name, value in headers.items():
-            if str(name).lower() == "authorization" and _fallback_auth_value_is_usable(value):
+            if str(name).lower() != "authorization":
+                continue
+            # The SDK emits "Bearer no-key-required" for local clients. Only the
+            # credentials after the scheme can establish an authenticated route.
+            parts = str(value or "").split(maxsplit=1)
+            if len(parts) == 2 and _fallback_auth_value_is_usable(parts[1]):
                 return True
     except (AttributeError, TypeError):
         pass

@@ -2,6 +2,10 @@
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import time
+
+from openai import OpenAI
+import pytest
 
 from agent.chat_completion_helpers import _fallback_destination_auth_failure
 from run_agent import AIAgent
@@ -35,7 +39,10 @@ def _client(base_url, api_key=""):
 
 def _pool(*, available):
     pool = MagicMock()
+    pool.has_credentials.return_value = True
     pool.has_available.return_value = available
+    # A short cooldown reaches the auth gate instead of the long-exhaustion guard.
+    pool.next_available_at.return_value = time.time() + 60
     return pool
 
 
@@ -49,7 +56,7 @@ def _activate(agent, client, pool):
 
 def test_paid_destination_without_credentials_is_skipped():
     agent = _make_agent({"provider": "opencode", "model": "deepseek-v4-flash-free"})
-    assert _activate(agent, _client("https://opencode.ai/zen/v1"), _pool(available=False)) is False
+    assert _activate(agent, _client("https://opencode.ai/zen/v1"), None) is False
     assert agent.provider == "custom"
     assert agent._unavailable_fallback_keys == {("opencode", "deepseek-v4-flash-free", "")}
 
@@ -78,7 +85,7 @@ def test_non_api_key_provider_still_activates_without_a_pool():
     assert _activate(
         agent,
         _client("https://bedrock-runtime.us-east-1.amazonaws.com"),
-        _pool(available=False),
+        None,
     ) is True
     assert agent.provider == "bedrock"
 
@@ -89,7 +96,7 @@ def test_local_endpoint_still_activates_without_a_key():
         "model": "local-model",
         "base_url": "http://127.0.0.1:11434/v1",
     })
-    assert _activate(agent, _client("http://127.0.0.1:11434/v1"), _pool(available=False)) is True
+    assert _activate(agent, _client("http://127.0.0.1:11434/v1"), None) is True
     assert agent.provider == "custom"
 
 
@@ -105,3 +112,44 @@ def test_no_key_placeholder_does_not_authenticate_remote_destination():
     assert _fallback_destination_auth_failure(
         "zai", client.base_url, client
     ) == "no usable credentials are available"
+
+
+@pytest.mark.parametrize(("api_key", "headers", "usable"), [
+    ("no-key-required", None, False),
+    ("", None, False),
+    ("  ", None, False),
+    ("", {"Authorization": "Bearer"}, False),
+    ("", {"Authorization": "Bearer "}, False),
+    ("", {"Authorization": "bEaReR\t no-key-required "}, False),
+    ("", {"Authorization": "Basic "}, False),
+    ("no-key-required", {"Authorization": "Bearer configured"}, True),
+    ("", {"authorization": "Basic dXNlcjpwYXNz"}, True),
+    ("", {"Authorization": "Token configured"}, True),
+    (_TEST_KEY, None, True),
+    (lambda: _TEST_KEY, None, True),
+])
+def test_real_client_requires_usable_authorization_credentials(api_key, headers, usable):
+    # The SDK synthesizes Authorization from api_key, including Hermes' placeholder.
+    with OpenAI(
+        api_key=api_key,
+        base_url="https://fallback.example.com/v1",
+        default_headers=headers,
+    ) as client:
+        reason = _fallback_destination_auth_failure("custom", str(client.base_url), client)
+        assert reason == (None if usable else "no usable credentials are available")
+        assert _fallback_destination_auth_failure(
+            "custom", "http://127.0.0.1:11434/v1", client,
+        ) is None
+
+
+def test_real_custom_fallback_without_credentials_keeps_primary_runtime():
+    base_url = "https://fallback.example.com/v1"
+    agent = _make_agent({
+        "provider": "custom", "model": "fallback-model", "base_url": base_url,
+    })
+    primary_runtime = (agent.model, agent.base_url, agent.client)
+
+    # Use the real resolver and credential store in the isolated HERMES_HOME.
+    assert agent._try_activate_fallback() is False
+    assert (agent.model, agent.base_url, agent.client) == primary_runtime
+    assert agent._unavailable_fallback_keys == {("custom", "fallback-model", base_url)}
