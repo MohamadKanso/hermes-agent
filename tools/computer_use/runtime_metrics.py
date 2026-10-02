@@ -145,7 +145,7 @@ class ComputerUseTelemetry:
         if phase is None:
             return
         try:
-            phase.runtime.finish_computer_use_phase(phase, self._event(phase.phase, outcome))
+            phase.runtime.finish_computer_use_phase(phase.handle, self._event(phase.phase, outcome))
         except Exception:
             pass
 
@@ -174,7 +174,7 @@ class ComputerUseTelemetry:
         self._backend_kind = _safe_backend_kind(backend)
         if cache_hit is not None:
             self._backend_cache_hit = "hit" if cache_hit else "miss"
-        if rebound is not None:
+        if rebound is not None and self._backend_rebound != "rebound":
             self._backend_rebound = "rebound" if rebound else "not_rebound"
 
     def mark_backend_rebound(self) -> None:
