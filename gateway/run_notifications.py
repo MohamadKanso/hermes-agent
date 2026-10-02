@@ -286,6 +286,7 @@ class GatewayNotificationsMixin:
                 "Async-delegation completion has unknown spawning session %s; "
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
             )
+            return None
         target_session_id = pinned_session_id
         if target_session_id != session_entry.session_id:
             visited = {target_session_id}
@@ -2097,6 +2098,18 @@ class GatewayNotificationsMixin:
             session = process_registry.get(session_id)
             if session is None:
                 break
+            _evt_owner = {
+                "owner_task_id": (
+                    watcher.get("owner_task_id")
+                    or getattr(session, "owner_task_id", "")
+                    or getattr(session, "task_id", "")
+                    or ""
+                ),
+            }
+            if ProcessRegistry.child_notification_suppressed(_evt_owner):
+                if session.exited:
+                    break
+                continue
             if silent:
                 # Still wait for the process to exit so we can log it, but don't push any messages.
                 if session.exited:

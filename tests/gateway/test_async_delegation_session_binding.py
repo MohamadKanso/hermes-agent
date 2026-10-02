@@ -337,3 +337,25 @@ async def test_subagent_nested_child_session_resolves_to_root_parent(tmp_path):
     assert resolved is not None
     assert resolved.session_id == parent_entry.session_id
 
+
+@pytest.mark.asyncio
+async def test_unknown_spawning_session_fails_closed(tmp_path):
+    """when the spawning session row is missing from the database, resolution returns none without error."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-3", chat_type="dm", user_id="user-3")
+    parent_entry = store.get_or_create_session(source)
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value=None))
+
+    resolved = await runner._resolve_async_delegation_session(parent_entry, "nonexistent-session")
+    assert resolved is None
+
