@@ -13,7 +13,7 @@ import { registerPluginLocales } from '@/i18n/plugin-i18n'
 // eslint-disable-next-line no-restricted-imports
 import { $notifications, clearNotifications } from '@/store/notifications'
 
-import { bindApi, taskKey } from './api'
+import { bindApi, logKey, taskKey } from './api'
 import { TaskDrawer } from './drawer'
 import { en, KANBAN_LOCALES } from './i18n'
 import type { KanbanTaskDetail } from './types'
@@ -29,6 +29,7 @@ const legacyDetail: Omit<KanbanTaskDetail, 'attachments'> = {
 }
 
 let detail: object
+let workerLog = { exists: false, size_bytes: 0, content: '', truncated: false }
 let client: QueryClient
 let disposeApi: () => void
 let disposeLocales: () => void
@@ -49,7 +50,7 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
   }
 
   if (path.startsWith('/tasks/t_example/log?')) {
-    return { exists: false, content: '', size_bytes: 0, truncated: false }
+    return workerLog
   }
 
   if (path === '/profiles') {
@@ -65,6 +66,8 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  detail = legacyDetail
+  workerLog = { exists: false, size_bytes: 0, content: '', truncated: false }
   disposeLocales = registerPluginLocales('kanban', KANBAN_LOCALES)
   disposeApi = bindApi(
     async <T,>(path: string, options?: PluginRestOptions) => (await rest(path, options)) as T,
@@ -92,6 +95,211 @@ function openDrawer() {
     </QueryClientProvider>
   )
 }
+
+describe('running worker visibility', () => {
+  it('opens a running task on the activity feed while the worker log is empty', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }]
+    }
+    openDrawer()
+
+    const activity = await screen.findByRole('button', { name: en.activity(1) })
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText(en.evtWorkerStarted)).toBeTruthy()
+  })
+
+  it('opens a completed task on its worker log when one is available', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'done' },
+      runs: [{ id: 7, status: 'completed' }]
+    }
+    workerLog = { exists: true, size_bytes: 27, content: 'previous worker output', truncated: false }
+    openDrawer()
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(log.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText(workerLog.content)).toBeTruthy()
+  })
+
+  it('opens the activity feed when its first event arrives after the drawer opens', async () => {
+    detail = { ...legacyDetail, task: { ...legacyDetail.task, status: 'running' }, events: [] }
+    openDrawer()
+    expect(await screen.findByText(legacyDetail.comments[0].body)).toBeTruthy()
+
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }]
+    }
+    await act(async () => client.invalidateQueries({ queryKey: taskKey('local', '', 't_example') }))
+
+    const activity = await screen.findByRole('button', { name: en.activity(1) })
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('switches to the live worker log when output arrives', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }]
+    }
+    openDrawer()
+
+    const activity = await screen.findByRole('button', { name: en.activity(1) })
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+
+    workerLog = { exists: true, size_bytes: 28, content: 'worker is checking the task', truncated: false }
+    await act(async () => client.invalidateQueries({ queryKey: logKey('local', '', 't_example') }))
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(log.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText(workerLog.content)).toBeTruthy()
+  })
+
+  it('keeps a manually selected tab when worker output arrives', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }]
+    }
+    openDrawer()
+
+    const comments = await screen.findByRole('button', { name: en.comments(1) })
+    fireEvent.click(comments)
+    expect(comments.getAttribute('aria-pressed')).toBe('true')
+
+    workerLog = { exists: true, size_bytes: 28, content: 'worker is checking the task', truncated: false }
+    await act(async () => client.invalidateQueries({ queryKey: logKey('local', '', 't_example') }))
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(comments.getAttribute('aria-pressed')).toBe('true')
+    expect(log.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('reopens the worker view for a new run after comments were selected', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }],
+      runs: [{ id: 7, status: 'running' }]
+    }
+    openDrawer()
+
+    const comments = await screen.findByRole('button', { name: en.comments(1) })
+    fireEvent.click(comments)
+    expect(comments.getAttribute('aria-pressed')).toBe('true')
+
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 2, kind: 'spawned', payload: { pid: 456 }, created_at: Date.now() / 1000 }],
+      runs: [
+        { id: 7, status: 'reclaimed' },
+        { id: 8, status: 'running' }
+      ]
+    }
+    workerLog = { exists: true, size_bytes: 28, content: 'new worker run started', truncated: false }
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: taskKey('local', '', 't_example') })
+      await client.invalidateQueries({ queryKey: logKey('local', '', 't_example') })
+    })
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(log.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('does not switch tabs after another control in the drawer is used', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }],
+      runs: [{ id: 7, status: 'running' }]
+    }
+    openDrawer()
+
+    const activity = await screen.findByRole('button', { name: en.activity(1) })
+    const status = screen.getByRole('button', { name: en.col.running.label })
+    fireEvent.pointerDown(status)
+    fireEvent.click(status)
+    fireEvent.keyDown(status, { key: 'Escape' })
+
+    workerLog = { exists: true, size_bytes: 28, content: 'worker is checking the task', truncated: false }
+    await act(async () => client.invalidateQueries({ queryKey: logKey('local', '', 't_example') }))
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+    expect(log.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('keeps the focused tab when worker output arrives', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }]
+    }
+    openDrawer()
+
+    const activity = await screen.findByRole('button', { name: en.activity(1) })
+    fireEvent.focus(activity)
+
+    workerLog = { exists: true, size_bytes: 28, content: 'worker is checking the task', truncated: false }
+    await act(async () => client.invalidateQueries({ queryKey: logKey('local', '', 't_example') }))
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+    expect(log.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('does not switch away from a focused worker comment draft when output arrives', async () => {
+    detail = { ...legacyDetail, task: { ...legacyDetail.task, status: 'running' }, events: [] }
+    openDrawer()
+
+    const composer = await screen.findByPlaceholderText(en.messageWorker)
+    fireEvent.focus(composer)
+    fireEvent.change(composer, { target: { value: 'please check the failing step' } })
+
+    workerLog = { exists: true, size_bytes: 28, content: 'worker is checking the task', truncated: false }
+    await act(async () => client.invalidateQueries({ queryKey: logKey('local', '', 't_example') }))
+
+    const comments = await screen.findByRole('button', { name: en.comments(1) })
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    expect(comments.getAttribute('aria-pressed')).toBe('true')
+    expect(log.getAttribute('aria-pressed')).toBe('false')
+    expect((composer as HTMLTextAreaElement).value).toBe('please check the failing step')
+  })
+
+  it('keeps an active worker log open and selects late output after completion', async () => {
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'running' },
+      events: [{ id: 1, kind: 'spawned', payload: { pid: 123 }, created_at: Date.now() / 1000 }],
+      runs: [{ id: 7, status: 'running' }]
+    }
+    openDrawer()
+
+    const activity = await screen.findByRole('button', { name: en.activity(1) })
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+
+    detail = {
+      ...legacyDetail,
+      task: { ...legacyDetail.task, status: 'done' },
+      runs: [{ id: 7, status: 'completed' }]
+    }
+    await act(async () => client.invalidateQueries({ queryKey: taskKey('local', '', 't_example') }))
+    await waitFor(() => expect(screen.getByText(en.col.done.label)).toBeTruthy())
+    expect(activity.getAttribute('aria-pressed')).toBe('true')
+
+    workerLog = { exists: true, size_bytes: 28, content: 'worker finished the task', truncated: false }
+    await act(async () => client.invalidateQueries({ queryKey: logKey('local', '', 't_example') }))
+
+    const log = await screen.findByRole('button', { name: en.workerLog })
+    await waitFor(() => expect(log.getAttribute('aria-pressed')).toBe('true'))
+    expect(screen.getByText(workerLog.content)).toBeTruthy()
+  })
+})
 
 describe('task attachment compatibility', () => {
   it('downloads the persisted attachment through its original remote owner', async () => {

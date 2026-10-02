@@ -349,11 +349,13 @@ function AssigneeMenu({
 // heavier option: post the note AND reclaim so the task restarts from scratch
 // with the note in context (use when the current run has gone off the rails).
 function CommentComposer({
+  onInteract,
   onRequeue,
   onSubmit,
   pending,
   running
 }: {
+  onInteract?: () => void
   onRequeue?: (body: string) => void
   onSubmit: (body: string) => void
   pending: boolean
@@ -391,7 +393,11 @@ function CommentComposer({
       <div className="relative">
         <Textarea
           className="field-sizing-content max-h-40 resize-none pr-9 text-[0.8125rem]"
-          onChange={event => setBody(event.target.value)}
+          onChange={event => {
+            onInteract?.()
+            setBody(event.target.value)
+          }}
+          onFocus={onInteract}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
               event.preventDefault()
@@ -687,6 +693,7 @@ function LinkChips({
 function FeedTabs({
   commentPending,
   detail,
+  interacted,
   log,
   onComment,
   onRequeue,
@@ -694,15 +701,32 @@ function FeedTabs({
 }: {
   commentPending: boolean
   detail: KanbanTaskDetail
+  interacted: boolean
   log: null | WorkerLog
   onComment: (body: string) => void
   onRequeue: (body: string) => void
   running: boolean
 }) {
   const k = useKanban()
-  const [tab, setTab] = useState<'activity' | 'comments' | 'log' | 'runs'>('comments')
-
   const hasLog = !!log?.exists && !!log.content
+  const hasActivity = detail.events.length > 0
+  const [tab, setTab] = useState<'activity' | 'comments' | 'log' | 'runs'>(() =>
+    hasLog ? 'log' : running && hasActivity ? 'activity' : 'comments'
+  )
+  const [tabSelected, setTabSelected] = useState(false)
+
+  useEffect(() => {
+    if (tabSelected || interacted) {
+      return
+    }
+
+    if (hasLog) {
+      setTab('log')
+    } else if (running && hasActivity) {
+      setTab('activity')
+    }
+  }, [hasActivity, hasLog, interacted, running, tabSelected])
+
   const switchable = detail.events.length > 0 || detail.runs.length > 0 || hasLog
 
   const tabs = [
@@ -741,7 +765,13 @@ function FeedTabs({
               ))}
             </ul>
           )}
-          <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
+          <CommentComposer
+            onInteract={() => setTabSelected(true)}
+            onRequeue={onRequeue}
+            onSubmit={onComment}
+            pending={commentPending}
+            running={running}
+          />
         </>
       )}
       {tab === 'activity' && (
@@ -822,7 +852,16 @@ function FeedTabs({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <SegmentedControl onChange={setTab} options={tabs} value={tab} />
+        <div onFocusCapture={() => setTabSelected(true)}>
+          <SegmentedControl
+            onChange={next => {
+              setTabSelected(true)
+              setTab(next)
+            }}
+            options={tabs}
+            value={tab}
+          />
+        </div>
         {help}
       </div>
       {body}
@@ -856,6 +895,10 @@ export function TaskDrawer({
 
   const task = detail?.task
   const running = task?.status === 'running'
+  const runId = detail?.runs.at(-1)?.id ?? null
+  const feedKey = task ? `${task.id}:${runId ?? task.current_run_started_at ?? task.started_at ?? 'idle'}` : (id ?? '')
+  const [interactedFeedKey, setInteractedFeedKey] = useState<string | null>(null)
+  const interactedWithFeed = interactedFeedKey === feedKey
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
@@ -973,7 +1016,11 @@ export function TaskDrawer({
         className="w-[min(62rem,94vw)] max-w-none"
         showCloseButton={false}
       >
-        <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
+        <header
+          className="flex flex-col gap-2 px-5 pt-4 pb-3"
+          onKeyDownCapture={() => setInteractedFeedKey(feedKey)}
+          onPointerDownCapture={() => setInteractedFeedKey(feedKey)}
+        >
           <div className="flex items-center gap-2">
             {task ? (
               <StatusMenu columns={columns} onMove={move} status={task.status} />
@@ -1037,7 +1084,12 @@ export function TaskDrawer({
           </DialogTitle>
         </header>
 
-        <div className="flex min-h-0 flex-1 flex-col" data-selectable-text="true">
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          data-selectable-text="true"
+          onKeyDownCapture={() => setInteractedFeedKey(feedKey)}
+          onPointerDownCapture={() => setInteractedFeedKey(feedKey)}
+        >
           {errorMessage ? (
             <ErrorState title={errorMessage} />
           ) : !detail || !task ? (
@@ -1089,8 +1141,10 @@ export function TaskDrawer({
                   )}
 
                   <FeedTabs
+                    key={feedKey}
                     commentPending={commentMut.isPending || requeueMut.isPending}
                     detail={detail}
+                    interacted={interactedWithFeed}
                     log={log ?? null}
                     onComment={body => commentMut.mutate(body)}
                     onRequeue={body => requeueMut.mutate(body)}
