@@ -9,8 +9,8 @@ import {
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import {
-  getOverlayState,
   beginClarifyAnswer,
+  getOverlayState,
   patchOverlayState,
   resetOverlayState,
   updateClarifyForRequest
@@ -41,7 +41,7 @@ const buildCtx = (appended: Msg[]) =>
       setInput: vi.fn()
     },
     gateway: {
-      gw: { request: vi.fn() },
+      gw: { request: vi.fn(async () => null) },
       rpc: vi.fn(async () => null)
     },
     session: {
@@ -725,6 +725,62 @@ describe('createGatewayEventHandler', () => {
 
     const assistant = appended.find(msg => msg.role === 'assistant')
     expect(assistant?.text).toBe('First. second.')
+  })
+
+  // Narration → tool → tool-complete → more narration → message.complete with
+  // its own `payload.text`. Nothing flushes the second narration block, so
+  // before the fix message.complete cleared the buffer and the transcript lost
+  // a block the user had already watched render.
+  const streamTailTurn = (onEvent: ReturnType<typeof createGatewayEventHandler>) => {
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'Checking the config first.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'config.yaml', name: 'read_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'read_file', summary: 'read', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { text: 'The provider block looks wrong.' }, type: 'message.delta' } as any)
+  }
+
+  it('keeps streaming text buffered after a tool call, in order, at message.complete (#61520)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    streamTailTurn(onEvent)
+    onEvent({ payload: { text: 'Final answer.' }, type: 'message.complete' } as any)
+
+    expect(appended.filter(msg => msg.role === 'assistant').map(msg => msg.text)).toEqual([
+      'Checking the config first.',
+      'The provider block looks wrong.',
+      'Final answer.'
+    ])
+
+    // The tail is flushed through the normal segment path, so the pending tool
+    // shelf lands on it exactly once instead of being duplicated or dropped.
+    const toolRows = appended.flatMap(msg => msg.tools ?? [])
+    expect(toolRows).toHaveLength(1)
+    expect(toolRows[0]).toContain('Read File')
+  })
+
+  it.each([
+    ['final text equals the streamed tail', { text: 'Answer.' }],
+    ['no final text (#16391 buffer fallback)', {}]
+  ])('keeps the tool shelf above the answer when %s (#61520)', (_label, payload) => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'Pre.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'config.yaml', name: 'read_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'read_file', summary: 'read', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { text: 'Answer.' }, type: 'message.delta' } as any)
+    onEvent({ payload, type: 'message.complete' } as any)
+
+    const answerIdx = appended.findIndex(msg => msg.text === 'Answer.')
+    const toolIdx = appended.findIndex(msg => (msg.tools ?? []).length > 0)
+
+    expect(appended.filter(msg => msg.text === 'Answer.')).toHaveLength(1)
+    expect(appended[answerIdx]?.tools ?? []).toHaveLength(0)
+    expect(toolIdx).toBeGreaterThan(-1)
+    expect(toolIdx).toBeLessThan(answerIdx)
+    expect(answerIdx).toBe(appended.length - 1)
   })
 
   it('anchors inline_diff as its own segment where the edit happened', () => {
@@ -1572,6 +1628,49 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  // Ctrl+C seals the reply at the keypress, but the agent streams until it
+  // notices the interrupt and persists everything it streamed (state.db and the
+  // next request's history). The screen must show that same partial.
+  const interruptedTranscript = (deltas: string[], late: string[], persisted: string) => {
+    vi.useFakeTimers()
+
+    try {
+      const history: Msg[] = []
+      const ctx = buildCtx(history)
+      ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
+      ctx.transcript.setHistoryItems = (next: ((prev: Msg[]) => Msg[]) | Msg[]) =>
+        history.splice(0, history.length, ...(typeof next === 'function' ? next([...history]) : next))
+      const onEvent = createGatewayEventHandler(ctx)
+
+      patchUiState({ sid: 'sess-1' })
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      deltas.forEach(text => onEvent({ payload: { text }, type: 'message.delta' } as any))
+      turnController.interruptTurn({
+        appendMessage: (msg: Msg) => history.push(msg),
+        gw: ctx.gateway.gw,
+        sid: 'sess-1',
+        sys: ctx.system.sys
+      })
+      late.forEach(text => onEvent({ payload: { text }, type: 'message.delta' } as any))
+      onEvent({ payload: { status: 'interrupted', text: persisted }, type: 'message.complete' } as any)
+
+      return history.filter(m => m.role === 'assistant').map(m => m.text)
+    } finally {
+      vi.runAllTimers()
+      vi.useRealTimers()
+    }
+  }
+
+  it('an interrupted reply shows the partial the agent persisted, including deltas streamed after Ctrl+C', () => {
+    expect(interruptedTranscript(['alpha beta', ' ga'], ['mma', ' delta'], 'alpha beta gamma delta')).toEqual([
+      'alpha beta gamma delta\n\n*[interrupted]*'
+    ])
+  })
+
+  it('an interrupted reply whose every delta landed after Ctrl+C still shows the persisted partial', () => {
+    expect(interruptedTranscript([], ['alpha', ' beta'], 'alpha beta')).toEqual(['alpha beta\n\n*[interrupted]*'])
+  })
+
   it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {
     // Force-send: interrupt holds busy so the drain waits for the real settle
     // instead of racing it (the race duplicated the bubble, leaked a "queued: …"
@@ -1609,39 +1708,19 @@ describe('createGatewayEventHandler', () => {
     ).toBe(false)
   })
 
-  it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {
-    const appended: Msg[] = []
-    const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-    // Backend clarify timed out: the overlay is still live (Python returned an
-    // empty answer), and the clarify tool's own tool.complete then fires.
-    patchOverlayState({
-      clarify: { choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?', requestId: 'req-1' }
-    })
-
-    onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
-
-    const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask How do you want to scope?'))
-    expect(record).toBeDefined()
-    expect(record?.text).toContain('1. Scope A')
-    expect(record?.text).toContain('2. Scope B')
-    // The live overlay is cleared so it doesn't double-render with the record.
-    expect(getOverlayState().clarify).toBeNull()
-  })
-
   it('only persists an abandoned clarify once even if tool.complete fires twice', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     patchOverlayState({
-      clarify: { choices: ['A'], question: 'Pick?', requestId: 'req-3' }
+      clarify: { questions: [{ choices: ['A'], qid: 'q0', question: 'Pick?' }], requestId: 'req-3' }
     })
 
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
     // A duplicate clarify tool.complete must not re-persist the same prompt.
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
-    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Pick?'))
+    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask ('))
     expect(records).toHaveLength(1)
   })
 
@@ -1652,7 +1731,7 @@ describe('createGatewayEventHandler', () => {
     // A clarify is live, but it's a *different* tool that just completed — the
     // clarify itself is still pending, so we must not persist or clear it.
     patchOverlayState({
-      clarify: { choices: ['A', 'B'], question: 'Pick?', requestId: 'req-4' }
+      clarify: { questions: [{ choices: ['A', 'B'], qid: 'q0', question: 'Pick?' }], requestId: 'req-4' }
     })
 
     onEvent({ payload: { name: 'search', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
@@ -1665,7 +1744,7 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    // Answered path (answerClarify) clears the overlay before the agent's
+    // Answered path (answerClarifyQuestion) clears the overlay before the agent's
     // tool.complete arrives, so there's nothing live to persist.
     onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
@@ -1680,8 +1759,6 @@ describe('createGatewayEventHandler', () => {
       clarify: {
         answers: { q1: 'red' },
         answerPending: true,
-        choices: null,
-        question: '',
         questions: [
           { qid: 'q1', question: 'Which colour for zeta?' },
           { qid: 'q2', question: 'Which colour for eta?' }
@@ -1694,9 +1771,10 @@ describe('createGatewayEventHandler', () => {
     // the final answer reserves this before the backend can emit tool.complete
     turnController.persistedToolLabels.add(toolTrailLabel('clarify'))
 
-    onEvent(
-      { payload: { name: 'clarify', summary: 'answered', tool_id: 'clar-answered' }, type: 'tool.complete' } as any
-    )
+    onEvent({
+      payload: { name: 'clarify', summary: 'answered', tool_id: 'clar-answered' },
+      type: 'tool.complete'
+    } as any)
 
     expect(getTurnState().streamPendingTools).toEqual([])
     expect(getTurnState().tools).toEqual([])
@@ -1718,26 +1796,22 @@ describe('createGatewayEventHandler', () => {
 
   it('does not let a late clarify response change a newer prompt', () => {
     const newerPrompt = {
-      choices: ['A', 'B'],
-      question: 'Choose for the next step?',
+      questions: [{ choices: ['A', 'B'], qid: 'q-new', question: 'Choose for the next step?' }],
       requestId: 'req-new'
     }
+
     patchOverlayState({ clarify: newerPrompt })
 
     expect(updateClarifyForRequest('req-old', () => null)).toBe(false)
     expect(getOverlayState().clarify).toEqual(newerPrompt)
 
-    expect(
-      updateClarifyForRequest('req-new', current => ({ ...current, answerPending: true }))
-    ).toBe(true)
+    expect(updateClarifyForRequest('req-new', current => ({ ...current, answerPending: true }))).toBe(true)
     expect(getOverlayState().clarify).toEqual({ ...newerPrompt, answerPending: true })
   })
 
   it('allows only one batch answer lock at a time', () => {
     patchOverlayState({
       clarify: {
-        choices: null,
-        question: '',
         questions: [{ choices: ['red', 'blue'], qid: 'q1', question: 'Which colour?' }],
         requestId: 'req-batch'
       }
@@ -1747,9 +1821,7 @@ describe('createGatewayEventHandler', () => {
     expect(beginClarifyAnswer('req-batch')).toBe(false)
     expect(getOverlayState().clarify?.answerPending).toBe(true)
 
-    expect(
-      updateClarifyForRequest('req-batch', current => ({ ...current, answerPending: false }))
-    ).toBe(true)
+    expect(updateClarifyForRequest('req-batch', current => ({ ...current, answerPending: false }))).toBe(true)
     expect(beginClarifyAnswer('req-batch')).toBe(true)
   })
 
@@ -1911,26 +1983,6 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
   })
 
-  it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
-    serverRequest(
-      'clarify',
-      {
-        choices: ['x', 'y'],
-        question: 'Fallback?',
-        questions: [
-          { qid: '', question: 'no qid' },
-          { qid: 'q1', question: '   ' }
-        ]
-      },
-      'req-bad'
-    )
-
-    const clarify = getOverlayState().clarify
-    expect(clarify?.questions).toBeUndefined()
-    expect(clarify?.question).toBe('Fallback?')
-    expect(clarify?.choices).toEqual(['x', 'y'])
-  })
-
   it('persists an abandoned batch clarify with its locked partials on tool.complete', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -1938,8 +1990,6 @@ describe('createGatewayEventHandler', () => {
     patchOverlayState({
       clarify: {
         answers: { q0: 'alpha' },
-        choices: null,
-        question: '',
         questions: [
           { choices: ['alpha', 'beta'], qid: 'q0', question: 'One?' },
           { choices: null, qid: 'q1', question: 'Two?' }
