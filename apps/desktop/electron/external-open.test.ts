@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
+import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure, buildCmdStartArgs } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -183,6 +183,73 @@ test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
   assert.deepEqual(result, { ok: true })
   assert.equal(spawned[0], 'cmd.exe')
   assert.ok(spawned.some(arg => arg === 'https://example.com/'))
+})
+
+test('buildCmdStartArgs: escapes cmd.exe metacharacters with carets', () => {
+  const clean = buildCmdStartArgs('https://example.com/path')
+  assert.deepEqual(clean, ['/c', 'start', '""', 'https://example.com/path'])
+
+  const attack1 = buildCmdStartArgs('https://example.com/&calc.exe')
+  assert.deepEqual(attack1, ['/c', 'start', '""', 'https://example.com/^&calc.exe'])
+
+  const attack2 = buildCmdStartArgs('https://example.com/&calc.exe&rem')
+  assert.deepEqual(attack2, ['/c', 'start', '""', 'https://example.com/^&calc.exe^&rem'])
+
+  const meta = buildCmdStartArgs('https://example.com/?a=1&b=2|3<4>5^6(7)8,9;0')
+  assert.deepEqual(meta, [
+    '/c',
+    'start',
+    '""',
+    'https://example.com/?a^=1^&b^=2^|3^<4^>5^^6^(7^)8^,9^;0'
+  ])
+})
+
+test('buildCmdStartArgs: rejects unescapable characters (% " ! control/whitespace)', () => {
+  for (const url of [
+    'https://example.com/"&calc.exe',
+    'https://example.com/%windir%/system32/calc.exe',
+    'https://example.com/%20/calc.exe',
+    'https://example.com/!VAR!',
+    'https://example.com/path with spaces',
+    'https://example.com/path\nnewline',
+    'https://example.com/path\r\n',
+    'https://example.com/path\t',
+    'https://example.com/path\x00null',
+    '',
+    null as unknown as string
+  ]) {
+    assert.equal(buildCmdStartArgs(url), null, `expected ${url} to be rejected`)
+  }
+})
+
+test('wsl: escapes attack metacharacters in cmd.exe arguments', async () => {
+  const spawned: string[] = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push(cmd, ...args)
+
+      return proc
+    }
+  })
+
+  const result = await openExternalUrl('https://example.com/&calc.exe', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.equal(spawned[0], 'cmd.exe')
+  assert.deepEqual(spawned.slice(1), ['/c', 'start', '""', 'https://example.com/^&calc.exe'])
+})
+
+test('wsl: falls back to openExternal when URL contains unescapable characters', async () => {
+  const { deps, calls } = makeDeps({ isWsl: true })
+
+  const result = await openExternalUrl('https://example.com/%windir%/calc.exe', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls.opened, ['https://example.com/%windir%/calc.exe'])
+  assert.ok(calls.logged.some(line => line.includes('WSL URL contains unescapable cmd characters')))
 })
 
 test('wsl: falls back to openExternal and notifies when cmd.exe fails to spawn', async () => {

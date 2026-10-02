@@ -147,10 +147,74 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
   }
 }
 
+/**
+ * build the argv array for `cmd.exe /c start "" <url>` on wsl.
+ *
+ * tier 1 (fail-closed reject):
+ * reject characters that cannot be safely passed to `cmd.exe /c start`:
+ * - `"` (double quotes alter cmd.exe argument tokenization and start window title parsing)
+ * - `%` (percent signs trigger %var% or %1 expansion in cmd.exe before caret processing)
+ * - `!` (exclamation marks trigger !var! delayed expansion)
+ * - whitespace and ascii control characters (0x00 - 0x20, 0x7f - 0x9f)
+ *
+ * tier 2 (caret escaping):
+ * escape cmd.exe shell metacharacters with `^` so they are passed as literal characters:
+ * `^` -> `^^` (must be escaped first)
+ * `&` -> `^&`
+ * `|` -> `^|`
+ * `<` -> `^<`
+ * `>` -> `^>`
+ * `(` -> `^(`
+ * `)` -> `^)`
+ * `,` -> `^,`
+ * `;` -> `^;`
+ * `=` -> `^=`
+ *
+ * returns `['/c', 'start', '""', escapedUrl]` or `null` if the url cannot be safely
+ * invoked through cmd.exe (in which case caller falls back to openExternal / xdg-open).
+ */
+export function buildCmdStartArgs(url: string): string[] | null {
+  if (!url || typeof url !== 'string') {
+    return null
+  }
+
+  if (/["%! \t\r\n\x00-\x1f\x7f-\x9f]/.test(url)) {
+    return null
+  }
+
+  const escaped = url
+    .replaceAll('^', '^^')
+    .replaceAll('&', '^&')
+    .replaceAll('|', '^|')
+    .replaceAll('<', '^<')
+    .replaceAll('>', '^>')
+    .replaceAll('(', '^(')
+    .replaceAll(')', '^)')
+    .replaceAll(',', '^,')
+    .replaceAll(';', '^;')
+    .replaceAll('=', '^=')
+
+  return ['/c', 'start', '""', escaped]
+}
+
 async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
+  const cmdArgs = buildCmdStartArgs(url)
+
+  if (!cmdArgs) {
+    deps.log(`[link] WSL URL contains unescapable cmd characters; falling back to openExternal: ${url}`)
+
+    try {
+      await deps.openExternal(url)
+
+      return { ok: true }
+    } catch (error) {
+      return failOpen(deps, url, error)
+    }
+  }
+
   deps.log(`[link] opening via WSL→Windows: ${url}`)
 
-  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', url], {
+  const proc = deps.spawn('cmd.exe', cmdArgs, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true
