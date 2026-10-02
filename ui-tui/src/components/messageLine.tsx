@@ -1,4 +1,5 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
+import { hasAnsi, sanitizeAnsiForRender, stripAnsi } from '@hermes/shared/ansi'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
@@ -8,15 +9,9 @@ import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { useT } from '../i18n/useT.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
-import {
-  boundedLiveRenderText,
-  compactPreview,
-  hasAnsi,
-  isPasteBackedText,
-  sanitizeAnsiForRender,
-  stripAnsi
-} from '../lib/text.js'
+import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -49,8 +44,10 @@ export const fmtMsgTimestamp = (createdAt: number | undefined): null | string =>
 }
 
 export const StreamingResponseBody = ({ cols, compact, expanded, onToggle, t, text }: StreamingResponseBodyProps) => {
+  const T = useT().chatBits.messageLine
   const boundedText = boundedLiveRenderText(text)
   const truncated = boundedText !== text
+  const visibleText = expanded ? text : boundedText
 
   return (
     <Box flexDirection="column">
@@ -58,11 +55,15 @@ export const StreamingResponseBody = ({ cols, compact, expanded, onToggle, t, te
         <Box onClick={onToggle}>
           <Text color={t.color.accent}>{expanded ? '▾ ' : '▸ '}</Text>
           <Text color={t.color.muted} dimColor>
-            {expanded ? 'Collapse live response' : 'Show full live response'}
+            {expanded ? T.collapseLiveResponse : T.showFullLiveResponse}
           </Text>
         </Box>
       )}
-      <StreamingMd cols={cols} compact={compact} t={t} text={expanded ? text : boundedText} />
+      {hasAnsi(text) ? (
+        <Ansi>{sanitizeAnsiForRender(visibleText)}</Ansi>
+      ) : (
+        <StreamingMd cols={cols} compact={compact} t={t} text={visibleText} />
+      )}
     </Box>
   )
 }
@@ -82,6 +83,8 @@ export const MessageLine = memo(function MessageLine({
   timestamps = false,
   tools = []
 }: MessageLineProps) {
+  const T = useT().chatBits.messageLine
+
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
   // sections only — never on the global mode.  A `trail` message feeds Tool
@@ -151,7 +154,7 @@ export const MessageLine = memo(function MessageLine({
     const maxChars = Math.max(24, cols - 14)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
     const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
-    const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
+    const preview = compactPreview(stripped, maxChars) || T.emptyToolResult
 
     return (
       <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
@@ -202,7 +205,7 @@ export const MessageLine = memo(function MessageLine({
     // MUST come before the hasAnsi check — system messages from the backend
     // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
     if (systemIsLong) {
-      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || '(system message)'
+      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || T.systemMessage
 
       return (
         <Box flexDirection="column">
@@ -211,7 +214,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.muted}>{firstLine}</Text>
             <Text color={t.color.muted} dimColor>
               {' — '}
-              {msg.text.length.toLocaleString()} chars
+              {T.chars(msg.text.length.toLocaleString())}
             </Text>
           </Box>
           {systemOpen && <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>}
@@ -219,7 +222,7 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
-    if (msg.role !== 'user' && hasAnsi(msg.text)) {
+    if (msg.role !== 'user' && !isStreaming && hasAnsi(msg.text)) {
       return <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>
     }
 
@@ -250,7 +253,7 @@ export const MessageLine = memo(function MessageLine({
         <Text color={body}>
           {head}
           <Text color={t.color.muted} dimColor>
-            [long message]
+            {T.longMessage}
           </Text>
           {rest.join('')}
         </Text>
@@ -321,7 +324,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.border}>└─ </Text>
           </NoSelect>
           <Text color={t.color.muted} dim>
-            Response
+            {T.response}
           </Text>
         </Box>
       )}

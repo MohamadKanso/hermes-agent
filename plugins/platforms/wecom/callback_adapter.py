@@ -34,6 +34,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import MessageDeduplicator, send_chunks
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,10 @@ ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
 _SEND_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token="
 _TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
 
 
 def check_wecom_callback_requirements() -> bool:
@@ -70,10 +75,12 @@ def ensure_wecom_callback_requirements() -> bool:
         return {"ET": _ET, "DEFUSEDXML_AVAILABLE": True}
 
     try:
-        from tools.lazy_deps import ensure_and_bind
+        from pm.extras import ensure_and_bind
     except Exception:  # pragma: no cover — defensive
         return False
-    return bool(ensure_and_bind("platform.wecom_callback", _import, globals(), prompt=False)) and check_wecom_callback_requirements()
+    if not ensure_and_bind("wecom", _import, globals()):
+        return False
+    return check_wecom_callback_requirements()
 
 
 def _ack():
@@ -83,6 +90,9 @@ def _ack():
 class WecomCallbackAdapter(BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
+    # message/send keeps only the first 2048 BYTES of text.content and drops the rest silently.
+    MAX_MESSAGE_LENGTH = 2048
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH, _utf8_len)
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
@@ -93,7 +103,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._apps: List[Dict[str, Any]] = self._normalize_apps(extra)
         self._runner = self._site = self._app = self._http_client = self._poll_task = None
         self._message_queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
-        self._seen_messages: Dict[str, float] = {}
+        self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._user_app_map: Dict[str, str] = {}
         self._access_tokens: Dict[str, Dict[str, Any]] = {}
 
@@ -178,9 +188,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._http_client = None
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """One text message per MAX_MESSAGE_LENGTH-byte chunk; stops at the first failure."""
         app = self._resolve_app_for_chat(chat_id)
+        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=_utf8_len)
+        return await send_chunks(chunks, lambda chunk: self._send_text(app, chat_id, chunk))
+
+    async def _send_text(self, app: Dict[str, Any], chat_id: str, content: str) -> SendResult:
         try:
-            payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content[:2048]}, "safe": 0}
+            payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content}, "safe": 0}
             for _attempt in range(2):
                 token = await self._get_access_token(app)
                 resp = await self._http_client.post(f"{_SEND_URL}{token}", json=payload)
@@ -233,7 +248,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 event = self._build_event(app, self._decrypt_request(app, body, msg_signature, timestamp, nonce))
                 if event is not None:
                     # WeCom retries callbacks on timeout → duplicate inbound messages.
-                    if event.message_id and self._is_duplicate(event.message_id):
+                    if event.message_id and self._dedup.is_duplicate(event.message_id):
                         logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
                         return _ack()
                     if event.source and event.source.user_id:
@@ -250,17 +265,6 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     @staticmethod
     def _signature_params(request: web.Request):
         return tuple(request.query.get(k, "") for k in ("msg_signature", "timestamp", "nonce"))
-
-    def _is_duplicate(self, message_id: str) -> bool:
-        # Deduplicate: WeCom retries callbacks on timeout, producing duplicate inbound messages (#10305).
-        now = time.time()
-        if now - self._seen_messages.get(message_id, float("-inf")) < MESSAGE_DEDUP_TTL_SECONDS:
-            return True
-        self._seen_messages[message_id] = now
-        if len(self._seen_messages) > 2000:  # prune expired entries
-            cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
-            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-        return False
 
     async def _poll_loop(self) -> None:
         while True:
