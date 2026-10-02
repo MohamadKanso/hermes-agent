@@ -1,9 +1,11 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { onScrollToBottomRequest } from '@/store/thread-scroll'
+
+import { TIMELINE_REVEAL_EVENT, type TimelineRevealRequest } from './timeline-data'
 
 const view = {
   $messages: atom<ChatMessage[]>([]),
@@ -15,7 +17,7 @@ let visible = true
 let isHistoricalWindow = false
 
 vi.mock('@/app/chat/session-view', () => ({ useSessionView: () => view }))
-vi.mock('@/app/chat/composer/scope', () => ({ useComposerSurfaceId: () => 'session-1' }))
+vi.mock('@/app/chat/composer/scope', () => ({ useComposerSurfaceId: () => 'surface-1' }))
 vi.mock('@/components/pane-shell/pane-visibility', () => ({ usePaneVisible: () => visible }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('./transcript-window', () => ({
@@ -77,23 +79,19 @@ afterEach(() => {
 })
 
 describe('ThreadTimeline newest prompt jump', () => {
-  it('routes clicking the newest entry to requestScrollToBottom', async () => {
+  it.each([
+    { runtimeId: 'session-1', storedId: 'stored-1' },
+    { runtimeId: null, storedId: 'stored-1' },
+    { runtimeId: null, storedId: null }
+  ])('routes the newest entry to its listener for $runtimeId / $storedId', async ({ runtimeId, storedId }) => {
+    view.$runtimeId.set(runtimeId)
+    view.$storedId.set(storedId)
     const bottomRequested = vi.fn()
-    const stopListening = onScrollToBottomRequest(bottomRequested, 'session-1')
+    const otherSessionRequested = vi.fn()
+    onTestFinished(onScrollToBottomRequest(bottomRequested, runtimeId ?? 'surface-1'))
+    onTestFinished(onScrollToBottomRequest(otherSessionRequested, 'stored-1'))
 
-    const host = window.document.createElement('div')
-    host.innerHTML = `
-      <div data-session-anchor="session-1">
-        <div data-slot="aui_thread-viewport" style="height: 500px; overflow: auto;">
-          <div data-message-id="u0">turn 0</div>
-          <div data-message-id="u1">turn 1</div>
-          <div data-message-id="u2">turn 2</div>
-        </div>
-      </div>
-    `
-    window.document.body.appendChild(host)
-
-    const ui = render(<ThreadTimeline />, { container: host.firstElementChild as HTMLElement })
+    const ui = render(<ThreadTimeline />)
 
     const newestBtn = ui.getByTestId('jump-u2')
     await act(async () => {
@@ -101,12 +99,16 @@ describe('ThreadTimeline newest prompt jump', () => {
     })
 
     expect(bottomRequested).toHaveBeenCalledTimes(1)
-    stopListening()
+    expect(otherSessionRequested).not.toHaveBeenCalled()
   })
 
-  it('routes clicking an earlier entry to turn reveal instead of requestScrollToBottom', async () => {
+  it.each([
+    { id: 'u0', historical: false },
+    { id: 'u2', historical: true }
+  ])('reveals $id in historical=$historical instead of jumping to bottom', async ({ id, historical }) => {
+    isHistoricalWindow = historical
     const bottomRequested = vi.fn()
-    const stopListening = onScrollToBottomRequest(bottomRequested, 'session-1')
+    onTestFinished(onScrollToBottomRequest(bottomRequested, 'session-1'))
 
     const host = window.document.createElement('div')
     host.innerHTML = `
@@ -122,24 +124,31 @@ describe('ThreadTimeline newest prompt jump', () => {
             <div data-message-id="u2">turn 2</div>
           </div>
         </div>
+        <div data-testid="timeline-host"></div>
       </div>
     `
     window.document.body.appendChild(host)
 
     const viewport = host.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')!
-    viewport.addEventListener('timeline-reveal', (e: Event) => {
-      const custom = e as CustomEvent<{ id: string; complete: (id: string) => void }>
-      custom.detail.complete(custom.detail.id)
+
+    const reveal = vi.fn((event: Event) => {
+      const { detail } = event as CustomEvent<TimelineRevealRequest>
+      detail.complete(false)
     })
 
-    const ui = render(<ThreadTimeline />, { container: host.firstElementChild as HTMLElement })
+    viewport.addEventListener(TIMELINE_REVEAL_EVENT, reveal)
 
-    const earlierBtn = ui.getByTestId('jump-u0')
+    const ui = render(<ThreadTimeline />, {
+      container: host.querySelector<HTMLElement>('[data-testid="timeline-host"]')!
+    })
+
+    const earlierBtn = ui.getByTestId(`jump-${id}`)
     await act(async () => {
       fireEvent.click(earlierBtn)
     })
 
+    expect(reveal).toHaveBeenCalledTimes(1)
+    expect(reveal.mock.calls[0][0]).toMatchObject({ detail: { id } })
     expect(bottomRequested).not.toHaveBeenCalled()
-    stopListening()
   })
 })

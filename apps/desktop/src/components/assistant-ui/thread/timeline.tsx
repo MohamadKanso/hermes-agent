@@ -160,7 +160,7 @@ const ActiveThreadTimeline: FC = () => {
 
       if (!history.isHistorical && railEntries.length > 0 && railEntries.at(-1)?.id === id) {
         triggerHaptic('selection')
-        const scrollSessionId = view.$runtimeId.get() ?? view.$storedId.get() ?? surfaceId
+        const scrollSessionId = view.$runtimeId.get() ?? surfaceId
         requestScrollToBottom(scrollSessionId)
 
         return
