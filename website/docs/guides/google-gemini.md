@@ -115,21 +115,28 @@ another host is treated as an OpenAI-compatible endpoint, so configure it with i
 
 ### Vertex AI Express Mode Keys
 
-Google issues Gemini API keys starting with `AIza…` (legacy) or `AQ.…` (current format for
-Google AI Studio and Vertex AI Express Mode). By default, Hermes routes Gemini keys to
-Google AI Studio at `https://generativelanguage.googleapis.com/v1beta`.
-
-If you are using **Vertex AI Express Mode** (an `AQ.…` key created in Google Cloud Vertex AI
-rather than Google AI Studio), configure `GEMINI_BASE_URL`:
-
-```bash
-export GEMINI_BASE_URL=https://aiplatform.googleapis.com
-```
-
-Hermes automatically completes `https://aiplatform.googleapis.com` (with or without `/v1beta1`)
-to the `https://aiplatform.googleapis.com/v1beta1/publishers/google` endpoint required for
-Vertex AI Express. Express keys are separate from the OAuth-based
+Google now issues `AQ.…`-prefixed keys for **both** Google AI Studio and Vertex AI
+express mode (the legacy `AIza…` Studio format is being phased out), so a key's
+prefix no longer identifies its surface. Hermes never reroutes by key shape: the
+configured base URL decides the surface. Set `GEMINI_API_KEY` and leave
+`GEMINI_BASE_URL` unset for the default AI Studio host; set `GEMINI_BASE_URL` to
+`https://aiplatform.googleapis.com` (with or without `/v1beta1`) for a Vertex AI
+express-mode key, and Hermes completes it to the `publishers/google` form. Each
+surface only accepts its own keys — a `403 PERMISSION_DENIED` usually means the
+key/host pairing is crossed, and Hermes appends guidance naming the other surface.
+A base URL on any other host (a proxy) is never rewritten. Express keys are
+separate from the OAuth-based
 [Vertex AI provider](./google-vertex.md), which needs no API key.
+
+:::warning Upgrade note for existing express-key users
+Earlier Hermes releases detected the `AQ.` prefix and rerouted such keys to
+`aiplatform.googleapis.com` automatically, so the documented setup was "set
+`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset". That
+automatic reroute is gone: with `GEMINI_BASE_URL` unset, every request — chat,
+`hermes doctor`, TTS — now goes to the AI Studio host and a Vertex express key
+gets `403 PERMISSION_DENIED` there. Add `GEMINI_BASE_URL=https://aiplatform.googleapis.com`
+to `~/.hermes/.env` (or set `base_url` on the provider) once and restart.
+:::
 
 ## Available Models
 
