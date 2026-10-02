@@ -46,10 +46,8 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
 
-    The mode comes from the canonical token matcher, never an argv substring: this gates the
-    launchd backend inventory (a KILL + kickstart path) and ``--status``, and ``hermes serve``
-    is a prefix of ``hermes server``/``service`` — a ``herdr --session hermes server``
-    multiplexer must not be claimed as a Hermes backend (#121156).
+    The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
+    backend inventory (a kill + kickstart path) and ``--status`` (#121156).
     """
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     mode = _hermes_holder_subcommand(command)

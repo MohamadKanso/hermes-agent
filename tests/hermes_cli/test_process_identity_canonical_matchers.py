@@ -4,8 +4,6 @@ defer to the canonical matchers instead of argv substrings (root AGENTS.md proce
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from hermes_cli.dashboard_procs import _is_desktop_local_serve_cmdline
@@ -76,12 +74,12 @@ def test_dashboard_runtime_parse_agrees_with_the_canonical_holder_matcher(
         assert runtime[0] == subcommand
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Python module names resolve case-insensitively on Windows")
+@pytest.mark.platforms("posix")
 def test_module_entrypoint_is_case_sensitive_on_posix():
     assert _hermes_holder_subcommand("python -m HERMES_CLI.MAIN serve") is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Python module names resolve case-insensitively on Windows")
+@pytest.mark.platforms("posix")
 def test_live_argv_is_not_case_folded_before_the_canonical_matcher():
     """The reap paths classify the LIVE argv; case-folding it there would re-open the bug class.
 
@@ -259,3 +257,31 @@ def test_desktop_ownership_survives_the_composed_matchers(monkeypatch):
 
     _scan([lookalike, unrelated, watcher])
     assert win._desktop_owns_gateway_lifecycle() is False, "no lookalike may confer ownership"
+
+
+# ``hermes serve`` is a substring of ``hermes server``: a terminal multiplexer started as
+# ``herdr --session hermes server`` was SIGTERMed by ``hermes update`` and its unit restarted (#121156).
+DECOY = "tool --name hermes server 30"
+BACKENDS = [
+    "/opt/hermes/venv/bin/python -m hermes_cli.main serve --port 0",
+    "/usr/bin/python3 /opt/hermes/hermes_cli/main.py dashboard --no-open",
+]
+
+
+def test_dashboard_scan_selects_entrypoint_plus_subcommand_tokens_never_substrings(monkeypatch):
+    import hermes_cli.dashboard_procs as dashboard_procs
+    import hermes_cli.process_identity as process_identity
+
+    monkeypatch.setattr(dashboard_procs, "_iter_process_table",
+                        lambda: [(4242, DECOY), *((5000 + i, cmd) for i, cmd in enumerate(BACKENDS))])
+    monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+    assert dashboard_procs._scan_dashboard_processes() == [(5000, BACKENDS[0]), (5001, BACKENDS[1])]
+
+
+def test_dashboard_runtime_parse_refuses_the_decoy_and_reads_a_real_backend():
+    from hermes_cli.main_dashboard import _parse_dashboard_runtime
+
+    assert _parse_dashboard_runtime(DECOY) is None
+    assert _parse_dashboard_runtime(BACKENDS[0]) == ("serve", "127.0.0.1", 0)
+    # launchd ProgramArguments arrive ``shlex.join``ed: a quoted path with spaces is still the entry.
+    assert _parse_dashboard_runtime("'/Users/a b/venv/bin/hermes' dashboard --port 9200") == ("dashboard", "127.0.0.1", 9200)
