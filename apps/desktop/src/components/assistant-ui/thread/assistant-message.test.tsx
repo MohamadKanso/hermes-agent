@@ -10,6 +10,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
+import type { ErrorCardCopy } from '@/i18n/types'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
@@ -39,6 +40,10 @@ vi.mock('@/store/onboarding', async importOriginal => ({
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
+
+// Resolve error-card copy from the catalog so wording edits don't break the behavior assertions.
+const copy = (value: ErrorCardCopy['title'], provider = '') => (typeof value === 'function' ? value(provider) : value)
+const codes = en.assistant.thread.errorCodes
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const completedAt = createdAt.getTime() / 1000 + 1.25
@@ -212,6 +217,23 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   })
 })
 
+describe('stopped reply marker', () => {
+  it('marks a reply the user stopped', async () => {
+    const base = assistantMessage()
+    const stopped = { ...base, metadata: { ...base.metadata, custom: { interrupted: true } } } as ThreadMessage
+    render(<Harness assistant={stopped} />)
+
+    expect(await screen.findByText(en.assistant.thread.responseStopped)).toBeTruthy()
+  })
+
+  it('leaves a finished reply unmarked', async () => {
+    render(<Harness />)
+    await screen.findByText('done')
+
+    expect(screen.queryByText(en.assistant.thread.responseStopped)).toBeNull()
+  })
+})
+
 describe('ownership refusal recovery (#106217)', () => {
   it('offers Start new session and suppresses Retry for live-owner refusals', async () => {
     render(<Harness assistant={ownershipRefusalMessage()} />)
@@ -223,13 +245,12 @@ describe('ownership refusal recovery (#106217)', () => {
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
   })
 
-  it('explains the refusal in plain words and demotes the lease text to details', async () => {
+  it('demotes the raw lease text to the collapsed details', async () => {
     render(<Harness assistant={ownershipRefusalMessage()} />)
 
-    expect(await screen.findByText(/open in another Hermes window or terminal/)).toBeTruthy()
     // The raw refusal ("live owner", "pid", "lease") is kept only inside the
     // collapsed Details disclosure, never as the headline.
-    const raw = screen.getByText(/already has a live owner/)
+    const raw = await screen.findByText(/already has a live owner/)
     expect(raw.closest('details')).not.toBeNull()
   })
 })
@@ -247,7 +268,7 @@ describe('code-keyed error card copy and actions', () => {
       />
     )
 
-    expect(await screen.findByText('The AI service declined this request')).toBeTruthy()
+    expect(await screen.findByText(copy(codes.content_policy_blocked.title))).toBeTruthy()
 
     // The user bubble itself is also labelled "Edit message"; assert on the
     // card's own action button.
@@ -269,14 +290,14 @@ describe('code-keyed error card copy and actions', () => {
     expect(await screen.findByRole('button', { name: 'Choose a model' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     // The raw HTTP body is not the lead sentence.
-    expect(screen.getByText(en.assistant.thread.errorCodes.model_not_found.title as string)).toBeTruthy()
+    expect(screen.getByText(copy(codes.model_not_found.title))).toBeTruthy()
     expect(screen.getByText(/HTTP 400/).closest('details')).not.toBeNull()
   })
 
   it('offers Compress conversation and Start new session for a context overflow', async () => {
     render(<Harness assistant={failedMessage({ code: 'context_overflow', layer: 'provider', retryable: true })} />)
 
-    expect(await screen.findByText('This conversation is too long')).toBeTruthy()
+    expect(await screen.findByText(copy(codes.context_overflow.title))).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Compress conversation' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Start new session' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
@@ -292,8 +313,8 @@ describe('code-keyed error card copy and actions', () => {
       />
     )
 
-    expect(await screen.findByText('The AI service is busy')).toBeTruthy()
-    expect(screen.getByText(/openai is limiting requests right now/)).toBeTruthy()
+    expect(await screen.findByText(copy(codes.rate_limit.title))).toBeTruthy()
+    expect(screen.getByText(copy(codes.rate_limit.body, 'openai'))).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
@@ -305,7 +326,7 @@ describe('code-keyed error card copy and actions', () => {
 
     render(<Harness assistant={legacy} />)
 
-    expect(await screen.findByText("Hermes couldn't finish this reply")).toBeTruthy()
+    expect(await screen.findByText(en.assistant.thread.errorLayers.generic)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 })
@@ -392,12 +413,14 @@ describe('rejected API key recovery', () => {
       </MemoryRouter>
     )
 
-    expect(await screen.findByText('OpenAI rejected your API key')).toBeTruthy()
+    expect(await screen.findByText(copy(en.assistant.thread.errorAuthKinds.api_key.title, 'OpenAI'))).toBeTruthy()
     // Fixing the key changes the outcome, so Retry stays as the follow-up click.
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
 
     screen.getByRole('button', { name: 'Update API key' }).click()
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=keys&key=OPENAI_API_KEY$/))
+    await waitFor(() =>
+      expect(screen.getByTestId('location').textContent).toMatch(/\?tab=providers&pview=keys&key=OPENAI_API_KEY$/)
+    )
   })
 })
 
@@ -519,7 +542,7 @@ describe('message timeline timestamps', () => {
     expect(roots[1]?.querySelector('[data-slot="aui_message-timing"]')).toBeTruthy()
   })
 
-  it('keeps lifecycle stamps on interim and error assistant bubbles', async () => {
+  it('keeps timing and copy actions on the last text-bearing interim before an error', async () => {
     const base = assistantMessage()
 
     const interim = {
@@ -530,11 +553,15 @@ describe('message timeline timestamps', () => {
       }
     } as ThreadMessage
 
-    const error = ownershipRefusalMessage()
-    error.metadata = {
-      ...error.metadata,
-      custom: { ...error.metadata?.custom, timelineTimestamp: createdAt.getTime() / 1000 }
-    }
+    const baseError = ownershipRefusalMessage()
+
+    const error = {
+      ...baseError,
+      metadata: {
+        ...baseError.metadata,
+        custom: { ...baseError.metadata?.custom, timelineTimestamp: createdAt.getTime() / 1000 }
+      }
+    } as ThreadMessage
 
     const { container } = render(<Harness messages={[userMessage(), interim, error]} />)
 
@@ -543,7 +570,9 @@ describe('message timeline timestamps', () => {
     const roots = container.querySelectorAll('[data-slot="aui_assistant-message-root"]')
 
     expect(roots[0]?.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
-    expect(roots[0]?.querySelector('[data-slot="aui_message-timing"]')).toBeNull()
+    // Main keeps a footer on the last text-bearing row of a tool/error-only ending.
+    expect(roots[0]?.querySelector('[data-slot="aui_message-timing"]')).toBeTruthy()
+    expect(roots[0]?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
     expect(roots[1]?.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
   })
 

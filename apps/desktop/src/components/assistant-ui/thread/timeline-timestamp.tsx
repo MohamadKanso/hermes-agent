@@ -65,7 +65,7 @@ export const TimelineTimestamp: FC<{
       // faint over a dark chrome and fainter over a light one.
       aria-label={showIcon ? title : undefined}
       className={cn(
-        'inline-flex items-center gap-1 text-[0.625rem] leading-4 tabular-nums text-(--conversation-scaffold-meta)',
+        'inline-flex min-w-0 flex-wrap items-center gap-1 text-[0.625rem] leading-4 tabular-nums text-(--conversation-scaffold-meta)',
         className
       )}
       data-slot="timeline-timestamp"
