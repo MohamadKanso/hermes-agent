@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 22556)
+Total output lines: 841
+
 ---
 sidebar_position: 3
 title: "Hermes Desktop"
@@ -136,13 +139,13 @@ The layout editor (titlebar button, or **Cmd/Ctrl+Shift+\\**) opens with an **In
 - **Advanced** (default) is the app as you have set it up. Users who have not explicitly selected Simple stay in Advanced.
 - **Simple** is chat-first: the statusbar, profile rail, terminal, file browser and review panes, the technical tool-call view, inline code diffs, and the Artifacts / Scheduled jobs rows rest out of the way (Capabilities and Messaging stay — they are how you set Hermes up); thinking starts collapsed; session rows show the title, a preview and when they were last active. The titlebar keeps Settings and the layout editor. Simple's layout picker offers *Sidebar left* or *Sidebar right*. The templates and saved layouts are Advanced.
 
-A layout says what is on screen, not just where things sit: applying one opens every pane it places and closes the ones it leaves *resting*, so **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** always agree with what you see. *Basic* is sessions and chat with the terminal resting as a collapsed rail under the chat and the file browser and review resting in a right column — **Ctrl+`** opens the terminal under the chat, **Cmd/Ctrl+J** opens the tree on the right. *Focus* keeps files and review as tabs behind the chat, with the same terminal rail. *Default*, *Terminal deck* and *Quad* open everything they place. A layout you save remembers which of its panes were closed.
+A layout says what is on screen, not just where things sit: applying one opens every pane it places and closes the ones it leaves *resting*, so **Ctrl+\`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** always agree with what you see. *Basic* is sessions and chat with the terminal resting as a collapsed rail under the chat and the file browser and review resting in a right column — **Ctrl+\`** opens the terminal under the chat, **Cmd/Ctrl+J** opens the tree on the right. *Focus* keeps files and review as tabs behind the chat, with the same terminal rail. *Default*, *Terminal deck* and *Quad* open everything they place. A layout you save remembers which of its panes were closed.
 
 Each mode remembers its own arrangement: pane positions, sizes, active tabs, hidden tabs, dismissals, collapsed sides and floating-card positions. Returning to a mode restores that arrangement rather than reapplying a preset. Simple starts with the sidebar on the left; moving it to the right does not change Advanced. Conversations, drafts, previews and running work stay shared.
 
 Existing layouts are retained on upgrade. Advanced continues using the original storage keys. If you already explicitly selected Simple, its current layout is copied into Simple's separate storage without deleting the originals. An older arrangement that was overwritten before this separation cannot be reconstructed.
 
-Simple shadows your display preferences instead of overwriting them. Every keybind still works in Simple — **Ctrl+`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** open the terminal, file browser and review for the current session, and the next launch is quiet again. With more than one profile the profile rail stays, since it is then the only way to switch. First-run onboarding sets the mode from the layout you pick: *Basic* starts in Simple, *Elite* in Advanced; skipping leaves it on Advanced.
+Simple shadows your display preferences instead of overwriting them. Every keybind still works in Simple — **Ctrl+\`**, **Cmd/Ctrl+J** and **Cmd/Ctrl+G** open the terminal, file browser and review for the current session, and the next launch is quiet again. With more than one profile the profile rail stays, since it is then the only way to switch. First-run onboarding sets the mode from the layout you pick: *Basic* starts in Simple, *Elite* in Advanced; skipping leaves it on Advanced.
 
 #### Minimize to tray
 
@@ -156,7 +159,7 @@ On macOS, the Dock icon hides only when no ordinary Hermes window remains visibl
 
 A real terminal lives in the right sidebar, next to the file browser:
 
-- **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
+- **Ctrl+\`** shows the terminal (opening one if none exist); **Ctrl+Shift+\`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
 
@@ -272,105 +275,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The public Skills Hub's **Install in Hermes** buttons open `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
-- **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
-- **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
-- **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
-- **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
-- **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
-
-### Bot Mode (built in)
-
-**Bot Mode** ships with the app and is on by default: a "one chat per agent"
-roster where every [Hermes profile](./profiles.md) appears as a bot with its
-own avatar (geometric face, uploaded image, AI-generated portrait, or a pixel
-pet), its own canonical **Bot Chat** conversation, and its own **Routines**
-(recurring tasks backed by Hermes cron). The roster lives in the left
-sidebar as a tab next to your conversations — a **Sessions | Bots** tab
-strip — rather than a second pane stacked below the session list. Installs
-that picked up the older stacked layout are re-homed into the tab strip
-automatically, once; if you've hand-placed panes yourself, your layout is
-left alone. The **Cronjobs** (Routines) pane docks beside the chat only
-while the Bots tab is active and disappears when you switch back to
-Sessions (older desktop builds keep it always visible).
-
-Create new agents from the roster —
-Name / Title / Description plus an Advanced disclosure with the full
-capabilities surface (model, SOUL, skills, toolsets, MCP servers) — group
-them into sections, and open group chats where several bots deliberate.
-Group chats appear as standalone Discord-style rows in the roster — stacked
-member avatars, member count, a preview of the latest room line, and the
-"needs you" badge — interleaved with the bot rows in the same pin+recency
-ordering. Clicking a group row opens the room as a tab that takes over the
-**main chat window** (older desktop builds fall back to opening it inside the
-bots side panel).
-
-Bots message each other: type `@researcher have a look at this` in any chat
-and the active bot hands the message off and reports back, and bots reach
-each other's Bot Chats directly (`hermes -p <bot> chat`). The backend teaches
-each bot's canonical **Bot Chat** session the messaging protocol
-automatically (config `agent.bot_mode_protocol`, default on) — including
-when a teammate bot opens it headlessly from the CLI — so bot-to-bot
-replies and handoffs work without touching your SOUL.md, and your regular
-sessions stay untouched.
-
-Bot Mode's sessions — each bot's canonical Bot Chat and every group-chat
-member session — are always hidden from the global Sessions sidebar. They
-live in the Bots pane (roster rows, room views, and each bot's session
-browser) instead of interleaving with your own conversations.
-
-Bots you don't use can be tucked away: right-click a bot row → **Hide
-Bot**. Hidden bots leave the roster but keep working — @mentions still
-resolve and group-chat membership is untouched. An eye toggle appears in
-the Bots header whenever at least one bot is hidden; click it to reveal
-hidden bots dimmed in place (right-click → **Unhide Bot** brings one back),
-and the eye shows a dot when a hidden bot has unread activity. Hidden
-state is stored in the bot's profile, so it follows the bot across
-machines.
-
-Don't want it? Flip its **Desktop** switch off in **Capabilities → Plugins → Bots** — the roster,
-routines pane, and composer middleware unregister live, no restart needed.
-
-Full guide — creating agents (including the multi-machine **Create on**
-picker), the roster across connections, bot-to-bot mentions, and how group
-chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
-
-### Keyboard & navigation
-
-- **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.
-- **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch to the Nth tab of the pane under the pointer (or the focused pane) and switch profiles when no pane has a tab strip, **Shift+X** toggle light/dark.
-- **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
-- **UI language switcher** — change the app's interface language in-app: English, Simplified Chinese (zh-Hans), Traditional Chinese (zh-Hant), Japanese, Arabic (RTL), and Russian.
-
-### Sessions & profiles
-
-- **Session-list overhaul** — a reworked session list with archiving and general session hygiene to keep the list manageable as it grows.
-- **Search sessions by id** — find a specific session directly by its id.
-- **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
-- **Export / import a profile** — share a whole setup as a single file. **⌘K → Export profile…** (or right-click a profile square in the rail) writes a `.tar.gz` with skills, memory, persona, crons, plugins, and settings; API keys are stripped. Exporting from the desktop also bundles your appearance and interface — skin, light/dark mode, custom themes, the profile's rail color, and your window layout — so an imported profile arrives looking the way the sender had it. Import via **⌘K → Import profile…** or the button beside the rail's **+**; it applies the overlay and drops you into the new profile. The same archive works with `/export` / `/import` in chat and `hermes profile export` / `import` from a shell. See [Export and import a profile file](./profile-distributions.md#export-and-import-a-profile-file).
-
-## Updating
-
-The app checks for updates in the background and offers a one-click update when one is ready.
-
-The background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. To spend a 5,000/hour budget instead, the check uses the first credential it finds, in this order:
-
-1. `GITHUB_TOKEN`, then `GH_TOKEN`, from the environment the app was launched from — read on each request, never stored.
-2. The [GitHub CLI](https://cli.github.com/)'s own login (`gh auth token`). This is the rung that helps an app started from the Dock, Finder, or a desktop launcher, which inherits a minimal environment without your shell's variables. `gh` is looked up on `PATH` and in the usual install locations (Homebrew, `/usr/local/bin`, `~/.local/bin`, the Windows GitHub CLI installer); the answer is cached until the app restarts, so `gh` runs at most once per session.
-3. Anonymous.
-
-A credential GitHub rejects (HTTP 401 — expired or revoked) is logged once in `desktop.log`, naming its source and never the token, and the request is retried anonymously. Applying an update uses `git`, not the API, and is unaffected.
-
-During a local update, detailed build output streams into the active profile's
-`logs/update.log`, including detached `--gateway` updates. It stays out of the
-terminal but is available for troubleshooting before the build finishes. The
-Windows hand-off counts new output in this log as progress; a child that produces
-no output is still subject to the idle watchdog. Process liveness alone does not
-reset that watchdog, and cancelling an update does not wait for its build to finish.
-
-The desktop app and the Hermes backend it talks to update on separate clocks — the app package on your machine, the backend wherever it runs. When more than one update target exists (a remote gateway, or several registered gateways), the update affordances (**Update now** on the About panel, the ⌘K **Update Hermes** row, and the update-ready toast) update **everything**: the connected backend first, then every other eligible registered gateway (Hermes Cloud entries are platform-managed and skipped), and the desktop app itself last, since applying the client update relaunches the app. Single-machine installs keep the one-button experience.
-
-After any backend update, the app also re-checks its own version and warns with a one-click **Update desktop app** action if the GUI is still behind — so updating a remote backend can never silently leave you on a stale desktop build.
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggl…2556 tokens truncated…updating a remote backend can never silently leave you on a stale desktop build.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
