@@ -1,5 +1,6 @@
 """Tests for project-local skill discovery (skills.trusted_project_dirs)."""
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -278,7 +279,8 @@ class TestWorktreeTrust:
         assert su.is_project_root_trusted(forged) is False
         assert su.is_project_root_trusted(wt) is True
 
-    def test_malformed_git_metadata_rejected(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("malformed_target", ["gitdir:", "gitdir:  \n", "gitdir: \x00"])
+    def test_malformed_git_metadata_rejected(self, tmp_path, monkeypatch, malformed_target):
         home = tmp_path / ".hermes"
         (home / "skills").mkdir(parents=True)
         config = home / "config.yaml"
@@ -303,6 +305,11 @@ class TestWorktreeTrust:
         # Does not start with gitdir:
         (bad_wt / ".git").write_text("ref: refs/heads/main\n")
         assert su._canonical_git_root(bad_wt) is None
+
+        # Empty or invalid worktree targets fail closed without a parser error.
+        (bad_wt / ".git").write_text(malformed_target, encoding="utf-8")
+        assert su._canonical_git_root(bad_wt) is None
+        assert su.is_project_root_trusted(bad_wt) is False
 
         # Points to non-existent dir
         (bad_wt / ".git").write_text("gitdir: /nonexistent/dir\n")
@@ -383,6 +390,43 @@ class TestWorktreeTrust:
             build_skills_system_prompt(skills_dir_override=home / "skills")
 
         assert any("project skill(s) found" in record.message for record in caplog.records)
+
+    @pytest.mark.parametrize("trusted", [False, True])
+    def test_worktree_prompt_preserves_tiered_skill_roots(
+        self, tmp_path, monkeypatch, caplog, trusted
+    ):
+        from agent.prompt_builder import build_skills_system_prompt
+
+        main, wt = self._setup_git_worktree(tmp_path)
+        home = tmp_path / ".hermes"
+        external = tmp_path / "external-skills"
+        created = tmp_path / "created-skills"
+        for root, name, description in (
+            (home / "skills", "tree-skill", "local fallback"),
+            (external, "external-skill", "external helper"),
+            (created, "created-skill", "created helper"),
+        ):
+            skill = root / name / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(f"---\nname: {name}\ndescription: {description}\n---\nbody\n", encoding="utf-8")
+        (home / "config.yaml").write_text(
+            f"skills:\n  external_dirs: ['{external}']\n  create_dir: '{created}'\n"
+            f"  trusted_project_dirs: {json.dumps([str(main)] if trusted else [])}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+
+        with caplog.at_level(logging.INFO):
+            prompt = build_skills_system_prompt(skills_dir_override=home / "skills")
+
+        assert "external-skill" in prompt
+        assert "created-skill" in prompt
+        assert ("from worktree" in prompt) is trusted
+        assert ("local fallback" in prompt) is not trusted
+        notices = [record for record in caplog.records if "project skill(s) found" in record.message]
+        assert bool(notices) is not trusted
 
     def test_cli_trust_untrust_inside_worktree(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
