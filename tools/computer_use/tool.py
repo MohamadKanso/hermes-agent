@@ -380,9 +380,13 @@ def _handle_computer_use(args: Dict[str, Any], action: str, session_id: str,
     # releases the admitted call lock on every dispatch return or exception.
     call = contextlib.ExitStack()
     try:
-        backend = call.enter_context(_backend_for_call(session_id))
+        # Keep the observer independent of provider-specific error rendering.
+        try:
+            backend = call.enter_context(_backend_for_call(session_id))
+        except Exception:
+            telemetry.set_outcome("unavailable")
+            raise
     except Exception as e:
-        telemetry.set_outcome("unavailable")
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})

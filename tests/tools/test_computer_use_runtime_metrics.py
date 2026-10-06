@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent import relay_runtime
 from hermes_cli.observability.shared_metrics_contract import computer_use_phase_fields
 from hermes_cli.observability import relay_shared_metrics
@@ -197,6 +199,54 @@ def test_computer_use_observer_respects_profile_opt_in_and_fails_open(tmp_path, 
         finally:
             reset_hermes_home_override(token)
     assert seen == [opted_in, opted_in]
+
+
+@pytest.mark.parametrize("failure_stage", ["create", "start"])
+def test_backend_admission_failure_preserves_response_and_unavailable_outcome(monkeypatch, failure_stage):
+    import json
+
+    import tools.computer_use_tool  # noqa: F401 — register the real dispatch handler
+    from tools.registry import registry
+
+    class Runtime:
+        def __init__(self):
+            self.opened = []
+            self.closed = []
+
+        def start_computer_use_phase(self, event):
+            handle = len(self.opened)
+            self.opened.append(handle)
+            return handle
+
+        def finish_computer_use_phase(self, handle, event):
+            self.closed.append((handle, event))
+
+    class Backend(computer_use_tool._NoopBackend):
+        def start(self):
+            raise RuntimeError("driver unavailable")
+
+    def new_backend(permission_mode):
+        if failure_stage == "create":
+            raise RuntimeError("driver unavailable")
+        return Backend()
+
+    runtime = Runtime()
+    monkeypatch.setattr(relay_runtime, "relay_instrumentation_enabled", lambda: True)
+    monkeypatch.setattr(relay_shared_metrics, "get_computer_use_runtime", lambda: runtime)
+    monkeypatch.setattr(computer_use_tool, "_new_backend", new_backend)
+    computer_use_tool.reset_backend_for_tests()
+    try:
+        result = json.loads(registry.dispatch(
+            "computer_use", {"action": "wait", "seconds": 0}, session_id="session", task_id="task"
+        ))
+    finally:
+        computer_use_tool.reset_backend_for_tests()
+
+    assert result["error"] == "computer_use backend unavailable: driver unavailable"
+    assert "hermes computer-use install" in result["hint"]
+    assert {handle for handle, _ in runtime.closed} == set(runtime.opened)
+    assert runtime.closed[-1][1]["phase"] == "total"
+    assert runtime.closed[-1][1]["outcome"] == "unavailable"
 
 
 def test_failed_followup_capture_keeps_successful_action_result():
