@@ -132,3 +132,26 @@ async def test_goal_status_does_not_spend_first_turn_skill_loading(bound_skill_r
     reply, _ = await runner._hmwa_prepare_turn(unreadable, source, entry, key, key, 1)
     assert isinstance(reply, str)
     runner._hmwa_auto_load_skills.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("internal", [False, True])
+async def test_first_contact_notes_only_for_human_turns(bound_skill_runner, monkeypatch, internal):
+    runner, source, key, _ = bound_skill_runner
+    source.chat_type = "dm"
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    runner._hmwa_first_contact_notes = GatewayRunner._hmwa_first_contact_notes.__get__(runner)
+    runner._deliver_platform_notice = AsyncMock()
+    await runner._handle_goal_command(MessageEvent(text="/goal status", source=source))
+    event = MessageEvent(
+        text="summarize incidents", source=source, internal=internal,
+        auto_skill=None if internal else "incident-check",
+    )
+
+    _, prepared = await _prepare(runner, source, key, event)
+
+    # A plugin can open an empty session without inviting human onboarding. The
+    # first human turn still gets both its bound skill and the first-contact notes.
+    assert ("BOUND_SKILL_WITNESS" in prepared.message_text) is (not internal)
+    assert bool(runner._consume_pending_turn_sidecar_notes(key)) is (not internal)
+    assert runner._deliver_platform_notice.await_count == int(not internal)

@@ -1407,12 +1407,12 @@ class GatewayTurnMixin:
             )
         return bounded
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
         from gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
-        if history:
+        if history or internal:  # internal = plugin/system turn: no human made first contact
             return
         human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
         if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
@@ -2087,7 +2087,7 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history_is_empty = not history
+            history_is_empty = not history  # Commands can touch activity before the first agent turn.
             history = await self._hmwa_run_session_hygiene(
                 event, source, session_entry, session_key, history, _quick_key, run_generation,
             )
@@ -2095,19 +2095,17 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             return t("gateway.errors.history_unavailable"), _session_env_tokens
 
-        # A non-generating command can touch activity before the first agent turn. Inspect the
-        # canonical transcript under the turn lease so that touch cannot consume bound-skill loading.
-        _auto = getattr(event, "auto_skill", None)
-        if _auto and (_is_new_session or history_is_empty):
-            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
-
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).
         _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
         if _vc_note:
             turn_sidecar_notes.append(_vc_note)
+
+        _auto = getattr(event, "auto_skill", None)
+        if _auto and (_is_new_session or history_is_empty):
+            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(
