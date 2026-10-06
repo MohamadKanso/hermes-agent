@@ -283,6 +283,8 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
     #90778.
     """
+    from hermes_state_holders import _python_execution_target_at
+
     try:
         tokens = shlex.split(cmdline, posix=False)
     except Exception:
@@ -292,7 +294,8 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # Hermes bootstrap running the entry point in this process (#124318).
     from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
     normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
-    if command_line_runs_inline_source(normalized):
+    # Once Python selects a module/script, its remaining flags are not interpreter options.
+    if _python_execution_target_at(normalized) is None and command_line_runs_inline_source(normalized):
         tokens = inline_bootstrap_argv(normalized)
         if tokens is None:
             return None
@@ -517,7 +520,7 @@ def _live_argv(psutil, pid, cmdline: str) -> str | None:
     except psutil.NoSuchProcess:
         return None
     except Exception:
-        pass
+        logger.debug("Could not read live argv for PID %s; retaining scanned command", pid, exc_info=True)
     return argv
 
 

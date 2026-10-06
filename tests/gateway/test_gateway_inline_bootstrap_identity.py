@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.status import command_line_runs_inline_source, looks_like_gateway_command_line
+from gateway.status import gateway_spawn_intent_subcommand, looks_like_gateway_command_line
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
@@ -27,12 +27,20 @@ _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
 
 
 @pytest.mark.parametrize("module_option", ["-mhermes_cli.main", "-umhermes_cli.main"])
-def test_attached_module_option_is_not_inline_source(module_option: str) -> None:
-    argv = [PY, module_option, "serve"]
+@pytest.mark.parametrize("subcommand", ["serve", "gateway"])
+def test_attached_module_owns_its_remaining_arguments(module_option: str, subcommand: str) -> None:
+    argv = [PY, module_option, subcommand, "run", "-c", "module-data"]
     command_line = " ".join(argv)
 
-    assert not command_line_runs_inline_source(argv)
-    assert _hermes_holder_subcommand(command_line) == "serve"
+    assert _hermes_holder_subcommand(command_line) == subcommand
+    assert looks_like_gateway_command_line(command_line) is (subcommand == "gateway")
+    assert gateway_spawn_intent_subcommand(command_line) == ("run" if subcommand == "gateway" else None)
+
+
+def test_unrelated_module_cannot_supply_bootstrap_or_spawn_identity() -> None:
+    argv = [PY, "-mother_cli.main", _SCRIPT, "serve"]
+    assert _hermes_holder_subcommand(subprocess.list2cmdline(argv)) is None
+    assert gateway_spawn_intent_subcommand(f"{PY} -mcustom --profile gateway run hermes") is None
 
 
 def _forms(argv: list[str]) -> dict[str, list[str]]:
