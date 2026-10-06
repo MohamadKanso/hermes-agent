@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from hermes_cli import main_desktop
+from hermes_cli import main_desktop, main_desktop_processes
 
 
 def _packaged_exe_rel() -> Path:
@@ -33,7 +33,7 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
     staged_exe.write_text("new", encoding="utf-8")
     # the windows swap call passes this keyword, so keep the double flexible.
     monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d, **kw: [])
-    monkeypatch.setattr(main_desktop, "_desktop_processes_running_from", lambda _tree: [])
+    monkeypatch.setattr(main_desktop_processes, "processes_running_from", lambda _tree: [])
     slept: list[float] = []
     monkeypatch.setattr(main_desktop._time_mod, "sleep", slept.append)
     return desktop_dir, staging, live_exe, slept

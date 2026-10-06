@@ -22,6 +22,7 @@ import time as _time_mod
 
 from pathlib import Path
 from typing import Callable, Optional
+from hermes_cli import main_desktop_processes
 from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
 from hermes_platform.host import facts
 
@@ -216,6 +217,22 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
+def _recover_interrupted_swap(live: Path, aside: Path) -> None:
+    """Finish a swap that died between its two renames before starting a new one: a missing
+    ``live`` with its ``aside`` copy present means the previous app was moved out and nothing
+    moved in, so put it back; otherwise ``aside`` is leftover. Deleting ``aside`` first (as the
+    swappers used to) destroyed the only remaining copy of the app."""
+    if not live.exists() and aside.is_dir():
+        try:
+            aside.rename(live)
+            logger.warning("restored %s from an interrupted desktop app swap", live)
+            return
+        except OSError as exc:
+            logger.warning("could not restore %s from %s: %s", live, aside, exc)
+            return
+    shutil.rmtree(aside, ignore_errors=True)
+
+
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
     """promote a verified staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. posix leaves a running app untouched and skips the swap.
@@ -247,18 +264,19 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
         moved_aside = live_root.exists()
         if previous.exists():
-            previous_running = _desktop_processes_running_from(previous)
+            previous_running = main_desktop_processes.processes_running_from(previous)
             if previous_running is None or previous_running:
                 report_skipped_swap(previous_running)
                 return None
         if moved_aside and sys.platform != "win32":
             # don't kill a live app just to finish an unattended update.
-            running = _desktop_processes_running_from(live_root)
+            running = main_desktop_processes.processes_running_from(live_root)
             if running is None or running:
                 report_skipped_swap(running)
                 return None
         release_dir.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(previous, ignore_errors=True)
+        _recover_interrupted_swap(live_root, previous)
+        moved_aside = live_root.exists()
         if moved_aside:
             # a desktop may reopen during the long packaging step. windows stops it to
             # release the bundle lock; posix refuses the swap while it is still running.
@@ -270,8 +288,8 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             if sys.platform != "win32":
                 # catch a launch that raced the first check before removing the old bundle.
                 # the normal launch path is absent now, so new launches can't start this old app.
-                in_previous = _desktop_processes_running_from(previous)
-                at_old_path = _desktop_processes_running_from(live_root)
+                in_previous = main_desktop_processes.processes_running_from(previous)
+                at_old_path = main_desktop_processes.processes_running_from(live_root)
                 if in_previous is None or at_old_path is None or in_previous or at_old_path:
                     running = (
                         None if in_previous is None or at_old_path is None
@@ -473,49 +491,6 @@ def _desktop_ancestor_in(desktop_dir: Path) -> Optional[int]:
         if _runs_from(parent, release_dir):
             return int(parent.pid)
     return None
-
-
-def _desktop_processes_running_from(tree: Path) -> Optional[list[int]]:
-    """return pids running from ``tree``, or None when the process scan is uncertain."""
-    try:
-        import psutil
-        tree = tree.resolve()
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline"])
-    except Exception:
-        return None
-
-    pids = []
-    try:
-        for proc in proc_iter:
-            try:
-                info = proc.info
-            except getattr(psutil, "NoSuchProcess", ()):
-                continue
-            except Exception:
-                return None
-            try:
-                pid = info.get("pid")
-                if pid is None:
-                    return None
-                exe = info.get("exe")
-                if not exe:
-                    name = str(info.get("name") or "").casefold()
-                    cmdline = info.get("cmdline") or []
-                    tree_text = os.path.normcase(str(tree))
-                    mentions_tree = any(tree_text in os.path.normcase(str(arg)) for arg in cmdline)
-                    if name.startswith("hermes") or mentions_tree:
-                        return None
-                    if not name and not cmdline:
-                        return None
-                    continue
-                exe_path = Path(exe).resolve()
-            except Exception:
-                return None
-            if exe_path == tree or tree in exe_path.parents:
-                pids.append(int(pid))
-    except Exception:
-        return None
-    return pids
 
 
 def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
