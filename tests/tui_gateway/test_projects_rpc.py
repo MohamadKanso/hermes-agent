@@ -564,6 +564,37 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
         db.close()
 
 
+@pytest.mark.parametrize("source", ["tool", "subagent"])
+def test_project_tree_hides_automation_before_applying_session_limit(
+    monkeypatch, tmp_path, source
+):
+    """Root automation rows stay out of Home and project drill-in (#134697)."""
+    from hermes_state import SessionDB
+
+    home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _bind_profiles(monkeypatch, tmp_path, {"default": home})
+    project = _create_project(home, "Project", repo)
+    with SessionDB(db_path=home / "state.db") as db:
+        for index, (session_id, session_source, cwd) in enumerate([
+            ("visible-project", "cli", str(repo)),
+            ("visible-home", "tui", ""),
+            ("automation-project", source, str(repo)),
+            ("automation-home", source, ""),
+        ]):
+            db.create_session(session_id, session_source, cwd=cwd)
+            db.append_message(session_id, "user", session_id, timestamp=1_790_000_000 + index)
+
+    with _serving_launch_profile(home):
+        tree = _call("projects.tree", {"session_limit": 2})
+        detail = _call("projects.project_sessions", {"project_id": project["id"]})
+
+    assert set(tree["scoped_session_ids"]) == {"visible-project", "visible-home"}
+    lane = detail["project"]["repos"][0]["groups"][0]
+    assert [row["id"] for row in lane["sessions"]] == ["visible-project"]
+
+
 @contextlib.contextmanager
 def _serving_launch_profile(launch_home: Path):
     """Run the handlers as a backend launched under ``launch_home``.
