@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pm import build_environment
-from pm.features import write_features
+from pm.features import installed_extras, write_features
 
 
 IMAGE_EXTRAS = (
@@ -19,7 +19,8 @@ def build_image_dependencies(root: Path, python: Path) -> None:
         extras=list(IMAGE_EXTRAS), no_install_project=True,
         frozen=True, sealed=True, explicit=True,
     )
-    write_features(list(IMAGE_EXTRAS), root)
+    inventory = installed_extras(root, root / ".venv", python_exe=python)
+    write_features(inventory, root)
 
 
 if __name__ == "__main__":

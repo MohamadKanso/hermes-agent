@@ -49,11 +49,15 @@ def test_prepared_image_retains_features_only_after_success(tmp_path, monkeypatc
 
     from docker import build_dependencies
     from pm.features import read_features
-    from pm.install import _target_selection
+    from pm.install import _feature_policy, _target_selection
+    from pm.package import InstallError
 
     root = tmp_path / "image"
     _image_layout(root)
-    prepared = []
+    declared = {"all", "messaging", "discord", "telegram", "mcp", "edge-tts"}
+    with (root / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write("[project.optional-dependencies]\n")
+        stream.writelines(f'"{extra}" = []\n' for extra in sorted(declared))
 
     def prepare(**kwargs):
         assert kwargs["source"] == root
@@ -62,9 +66,14 @@ def test_prepared_image_retains_features_only_after_success(tmp_path, monkeypatc
         assert kwargs["no_install_project"] and kwargs["frozen"]
         assert kwargs["sealed"] and kwargs["explicit"]
         assert not (root / "enabled-features.json").exists()
-        prepared.extend(kwargs["extras"])
+        assert kwargs["extras"] == list(build_dependencies.IMAGE_EXTRAS)
         if not build_succeeds:
             raise RuntimeError("dependency preparation failed")
+        site = Path(sysconfig.get_path(
+            "purelib", vars={"base": str(root / ".venv"), "platbase": str(root / ".venv")},
+        ))
+        for module in ("telegram", "discord", "mcp"):
+            (site / f"{module}.py").write_text("", encoding="utf-8")
         return root / ".venv/bin/python"
 
     monkeypatch.setattr(build_dependencies, "build_environment", prepare)
@@ -78,27 +87,46 @@ def test_prepared_image_retains_features_only_after_success(tmp_path, monkeypatc
 
     build_dependencies.build_image_dependencies(root, Path(sys.executable))
     inventory = (root / "enabled-features.json").read_bytes()
-    assert json.loads(inventory)["extras"] == sorted(prepared)
+    carried = ["discord", "mcp", "messaging", "telegram"]
+    assert json.loads(inventory)["extras"] == carried
     assemble_image(root)
     assert (root / "enabled-features.json").read_bytes() == inventory
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(root / "tools"))
-    assert read_features() == sorted(prepared)
-
-    declared = set(prepared) | {"discord"}
-    with (root / "pyproject.toml").open("a", encoding="utf-8") as stream:
-        stream.write("[project.optional-dependencies]\n")
-        stream.writelines(f'"{extra}" = []\n' for extra in sorted(declared))
+    assert read_features() == carried
     package = SimpleNamespace(
         project_root=lambda: root,
         expected_stamp=lambda extras, **kwargs: ",".join(extras),
     )
-    first, _, _ = _target_selection(
-        package, {}, extras=["discord"], inputs={}, repair=False,
-        shipped=read_features(), frozen=None,
-    )
-    assert first == sorted(declared)
+    for lazy in (True, False):
+        monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: lazy)
+        shipped, frozen = _feature_policy(["discord", "telegram", "mcp"], repair=False)
+        first, _, _ = _target_selection(
+            package, {}, extras=["discord"], inputs={}, repair=False,
+            shipped=shipped, frozen=frozen,
+        )
+        assert first == carried
+    with pytest.raises(InstallError, match="outside this bundle's frozen feature set"):
+        _feature_policy(["edge-tts"], repair=False)
     subsequent, _, _ = _target_selection(
         package, {"extras": ["discord"]}, extras=[], inputs={}, repair=False,
         shipped=read_features(), frozen=None,
     )
     assert subsequent == ["discord"]
+
+
+@pytest.mark.platforms("linux")
+def test_image_dependency_inventory_failure_never_publishes_features(tmp_path, monkeypatch):
+    from docker import build_dependencies
+    from pm.features import FeatureProbeError
+
+    root = tmp_path / "image"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname="empty-image"\nversion="1"\n[project.optional-dependencies]\ndiscord=[]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(build_dependencies, "build_environment", lambda **kwargs: root / ".venv/bin/python")
+    # A nominally successful build without its dependency tree is not an empty inventory.
+    with pytest.raises(FeatureProbeError, match="target dependency tree has no site-packages"):
+        build_dependencies.build_image_dependencies(root, Path(sys.executable))
+    assert not (root / "enabled-features.json").exists()
