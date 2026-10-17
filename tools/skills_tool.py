@@ -178,18 +178,9 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
     ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
     (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
     try:
-        from hermes_cli.config import load_config
-        skills_cfg = load_config().get("skills", {})
-        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
-        if not resolved_platform:
-            with suppress(Exception):
-                from gateway.session_context import get_session_env
-                resolved_platform = get_session_env("HERMES_SESSION_PLATFORM") or ""
-        platform_disabled = None
-        if resolved_platform:
-            platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
-        disabled = skills_cfg.get("disabled", [])
-        return any((platform_disabled is not None and n in platform_disabled) or n in disabled for n in names)
+        from agent.skill_utils import get_disabled_skill_names
+        disabled = get_disabled_skill_names(platform=platform)
+        return any(n in disabled for n in names)
     except Exception:
         return False
 

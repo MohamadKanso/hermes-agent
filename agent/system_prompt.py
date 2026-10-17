@@ -310,8 +310,11 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
-    return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+    return _pb.build_skills_system_prompt(
+        available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
+        compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent),
+        platform=getattr(agent, "platform", None),
+    )
 
 
 def _auto_load_parts(agent: Any) -> list[str]:

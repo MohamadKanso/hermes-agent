@@ -270,11 +270,19 @@ def get_disabled_skill_names(platform: str | None = None) -> set[str]:
     if skills_cfg is None:
         return set()
     from gateway.session_context import get_session_env
-    resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
+    from agent.delegation_context import is_delegated_child_context
+    session_platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
+    resolved_platform = platform or ("subagent" if is_delegated_child_context() else session_platform)
     disabled = _normalize_string_set(skills_cfg.get("disabled"))
-    platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
-    if platform_disabled is not None:
-        disabled |= _normalize_string_set(platform_disabled)
+    plat_map = skills_cfg.get("platform_disabled") or {}
+    if resolved_platform:
+        platform_disabled = plat_map.get(resolved_platform)
+        if platform_disabled is not None:
+            disabled |= _normalize_string_set(platform_disabled)
+        if resolved_platform == "subagent" and session_platform and session_platform != "subagent":
+            calling_disabled = plat_map.get(session_platform)
+            if calling_disabled is not None:
+                disabled |= _normalize_string_set(calling_disabled)
     return disabled - ESSENTIAL_SKILLS
 
 
