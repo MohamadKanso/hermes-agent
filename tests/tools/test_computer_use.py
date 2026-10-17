@@ -2077,6 +2077,75 @@ class TestSessionLifecycle:
     end_session, and every tool call carries the session id.
     """
 
+    @staticmethod
+    def _recording_session(tool_names: set[str], *, tool_schemas: dict[str, dict] | None = None):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+        tool_schemas = tool_schemas or {}
+
+        class RecordingSession(_CuaDriverSession):
+            def __init__(self):
+                super().__init__(MagicMock())
+                self._tool_names = tool_names
+                self.calls = []
+
+            def start(self):
+                class FakeClientSession:
+                    async def list_tools(self):
+                        return SimpleNamespace(
+                            tools=[
+                                SimpleNamespace(name=name, input_schema=tool_schemas.get(name, {}))
+                                for name in self._tool_names
+                            ]
+                        )
+
+                    def __init__(self, names):
+                        self._tool_names = names
+
+                asyncio.run(self._populate_capabilities(FakeClientSession(self._tool_names)))
+                self._started = True
+
+            def call_tool(self, name, args, timeout=30.0):
+                self.calls.append((name, args))
+                return {
+                    "data": "",
+                    "images": [],
+                    "image_mime_types": [],
+                    "structuredContent": None,
+                    "isError": False,
+                }
+
+        return RecordingSession()
+
+    @staticmethod
+    def _start_with_cursor_config(backend, *, no_overlay: bool) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+                return_value={"ready": True},
+            ),
+            patch(
+                "tools.computer_use.cua_backend._computer_use_cfg",
+                return_value={"cursor_high_visibility": True},
+            ),
+            patch(
+                "tools.computer_use.cua_backend._cua_no_overlay",
+                return_value=no_overlay,
+            ),
+            patch(
+                "tools.computer_use.cua_backend._computer_use_max_image_dimension",
+                return_value=0,
+            ),
+            patch("pm.ensure"),
+            patch("pm.ensure_import"),
+        ):
+            backend.start()
+
     def _backend_with_mock_session(self):
         from unittest.mock import MagicMock
         from tools.computer_use.cua_backend import CuaDriverBackend
@@ -2119,6 +2188,73 @@ class TestSessionLifecycle:
         assert name == "start_session"
         assert args["session"] == backend._session_id
 
+    def test_high_visibility_config_only_tunes_the_agent_cursor(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self._recording_session(
+            {"start_session", "end_session", "set_config", "set_agent_cursor_motion"}
+        )
+        self._start_with_cursor_config(backend, no_overlay=False)
+
+        motion_call = next(
+            args
+            for name, args in backend._session.calls
+            if name == "set_agent_cursor_motion"
+        )
+        assert motion_call == {
+            "effects": {"glow": "on", "trail": "on", "ripple": "on"},
+            "session": backend._session_id,
+        }
+
+    def test_high_visibility_is_set_before_the_cursor_first_appears_when_supported(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self._recording_session(
+            {"start_session", "end_session", "set_config"},
+            tool_schemas={"start_session": {"properties": {"cursor_motion": {"type": "object"}}}},
+        )
+        self._start_with_cursor_config(backend, no_overlay=False)
+
+        start_call = next(args for name, args in backend._session.calls if name == "start_session")
+        assert start_call == {
+            "session": backend._session_id,
+            "cursor_motion": {"effects": {"glow": "on", "trail": "on", "ripple": "on"}},
+        }
+
+    def test_high_visibility_is_skipped_when_cursor_overlay_is_disabled(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self._recording_session({
+            "start_session", "end_session", "set_config",
+            "set_agent_cursor_enabled", "set_agent_cursor_motion",
+        }, tool_schemas={"start_session": {"properties": {"cursor_motion": {"type": "object"}}}})
+        self._start_with_cursor_config(backend, no_overlay=True)
+
+        calls = [name for name, _ in backend._session.calls]
+        assert "set_agent_cursor_motion" not in calls
+        start_call = next(args for name, args in backend._session.calls if name == "start_session")
+        assert "cursor_motion" not in start_call
+        disable_call = next(
+            args
+            for name, args in backend._session.calls
+            if name == "set_agent_cursor_enabled"
+        )
+        assert disable_call == {"enabled": False, "session": backend._session_id}
+
+    def test_high_visibility_is_skipped_when_driver_lacks_motion_tool(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self._recording_session(
+            {"start_session", "end_session", "set_config"}
+        )
+        self._start_with_cursor_config(backend, no_overlay=False)
+
+        calls = [name for name, _ in backend._session.calls]
+        assert "set_agent_cursor_motion" not in calls
 
     def test_session_lifecycle_failures_are_non_fatal(self):
         """A lifecycle-label failure does not discard an otherwise valid runtime."""

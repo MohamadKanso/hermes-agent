@@ -65,6 +65,11 @@ def _cua_no_overlay() -> bool:
         os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
 
 
+def _cua_cursor_high_visibility() -> bool:
+    """enable extra effects on the agent cursor only when explicitly requested."""
+    return _computer_use_cfg().get("cursor_high_visibility") is True
+
+
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
     return not bool(_computer_use_cfg().get("cua_telemetry", False))
@@ -313,9 +318,18 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
                 rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()
             self._session.start()
             rollback.pop_all()
+        no_overlay = _cua_no_overlay()
+        high_visibility = _cua_cursor_high_visibility() and not no_overlay
+        start_args: dict[str, Any] = {"session": self._session_id}
+        if high_visibility and self._session.supports_input_property("start_session", "cursor_motion"):
+            start_args["cursor_motion"] = {"effects": {"glow": "on", "trail": "on", "ripple": "on"}}
         # Declare this run's identity. Non-fatal: cua-driver accepts anonymous calls (cursor won't render), so degrade.
-        self._best_effort("start_session failed (continuing anonymous)",
-                          self._session.call_tool, "start_session", {"session": self._session_id})
+        start_result = self._best_effort(
+            "start_session failed (continuing anonymous)",
+            self._session.call_tool,
+            "start_session",
+            start_args,
+        )
         # Post-handshake tuning guards on `_started`: before the handshake flips it, call_tool would re-enter
         # session.start() (stubbed start() recurses).
         if self._session._started:
@@ -323,9 +337,21 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             if max_dim:  # smaller screenshots cost less over the daemon socket and per turn
                 self._best_effort("set_config(max_image_dimension) failed",
                                   self.set_config, max_image_dimension=max_dim)
-            if _cua_no_overlay():  # belt-and-suspenders when --no-overlay is unsupported or ignored
+            if no_overlay:  # belt-and-suspenders when --no-overlay is unsupported or ignored
                 self._best_effort("set_agent_cursor_enabled failed",
-                                  self.set_agent_cursor_enabled, False, cursor_id=self._session_id)
+                                  self.set_agent_cursor_enabled, False)
+            elif high_visibility and self._session.supports_tool("set_agent_cursor_motion"):
+                initial_motion_applied = (
+                    "cursor_motion" in start_args
+                    and isinstance(start_result, dict)
+                    and start_result.get("isError") is False
+                )
+                if not initial_motion_applied:
+                    result = self.set_agent_cursor_motion(
+                        effects={"glow": "on", "trail": "on", "ripple": "on"}
+                    )
+                    if not result.ok:
+                        logger.debug("cua-driver high-visibility cursor setup failed: %s", result.message)
 
     def stop(self) -> None:
         # Best-effort end_session so the driver cleans per-session state (cursor overlay, recording ownership,
@@ -339,12 +365,13 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             teardown.callback(self._session.stop)
 
     @staticmethod
-    def _best_effort(what: str, fn, *args: Any, **kwargs: Any) -> None:
+    def _best_effort(what: str, fn, *args: Any, **kwargs: Any) -> Any | None:
         """Run a non-fatal driver call, logging (debug) instead of raising."""
         try:
-            fn(*args, **kwargs)
+            return fn(*args, **kwargs)
         except Exception as e:
             logger.debug("cua-driver %s: %s", what, e)
+            return None
 
     def is_available(self) -> bool:
         return sys.platform in ("darwin", "win32", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
@@ -385,10 +412,13 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # Strict live schema with no session property: a standalone native focus op, not a session-scoped input action.
         return self._action("bring_to_front", args, inject_session=False)
 
-    def set_agent_cursor_enabled(self, enabled: bool, *, cursor_id: Optional[str] = None) -> ActionResult:
+    def set_agent_cursor_enabled(self, enabled: bool) -> ActionResult:
         """Toggle the agent cursor overlay's visibility for this run."""
-        return self._action("set_agent_cursor_enabled",
-                            {"enabled": bool(enabled), **({"cursor_id": cursor_id} if cursor_id else {})})
+        return self._action("set_agent_cursor_enabled", {"enabled": bool(enabled)})
+
+    def set_agent_cursor_motion(self, *, effects: dict[str, str]) -> ActionResult:
+        """set motion effects for this run's agent cursor."""
+        return self._action("set_agent_cursor_motion", {"effects": dict(effects)})
 
     def set_config(self, **config) -> ActionResult:
         """Set cua-driver config keys (e.g. ``max_image_dimension``); unknown keys pass through — cua-driver validates."""

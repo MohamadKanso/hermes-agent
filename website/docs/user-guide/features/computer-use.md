@@ -252,12 +252,22 @@ wedging desktop input). Linux Wayland and Windows keep the overlay. Set
 `computer_use.no_overlay: false` in `config.yaml` to force the cursor on
 (or `true` to force it off) on any platform.
 
-Tune the cursor with `cua-driver`'s CLI flags or the runtime
-`set_agent_cursor_style` MCP tool — see
-[cua.ai/docs/how-to-guides/driver/personalize-cursor](https://cua.ai/docs/how-to-guides/driver/personalize-cursor)
-for the full menu (built-in `arrow` vs `teardrop` silhouette, custom
-SVG / PNG / ICO via `--cursor-icon`, runtime gradient colors, bloom
-halo).
+To make the agent cursor easier to follow, set this in `config.yaml`:
+
+```yaml
+computer_use:
+  cursor_high_visibility: true
+```
+
+this enables a glow, short trail, and click ripple for each run's agent
+cursor. these are motion cues, not cursor resizing or a static high-contrast
+theme, and the driver may suppress them when reduced motion is enabled. this
+never changes the system pointer. hermes leaves the driver's cursor effects
+alone by default, and ignores this option when the overlay is disabled or the
+installed driver does not support cursor motion effects.
+
+For custom themes and other cursor controls, see the cua-driver's
+[agent cursor tools](https://cua.ai/docs/cua-driver/reference/mcp-tools/agent-cursor).
 
 ## Going deeper — the cua-driver skill pack
 

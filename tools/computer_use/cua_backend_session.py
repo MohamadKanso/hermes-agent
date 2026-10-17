@@ -367,6 +367,10 @@ class _CuaDriverSession:
         False before discovery — callers treat that as "unknown"."""
         return name in self._capabilities
 
+    def supports_tool(self, name: str) -> bool:
+        """return whether ``tools/list`` advertised *name*."""
+        return self._has_tool(name)
+
     def supports_input_property(self, tool: str, property_name: str) -> bool:
         """Live tools/list schema accepts *property_name* (fails closed; no version guessing)."""
         schema = getattr(self, "_tool_schemas", {}).get(tool, {})
@@ -375,7 +379,7 @@ class _CuaDriverSession:
 
     @property
     def capabilities_discovered(self) -> bool:
-        """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""
+        """tools/list populated the map; when False tool discovery is untrustworthy."""
         return bool(self._capabilities)
 
     @property
