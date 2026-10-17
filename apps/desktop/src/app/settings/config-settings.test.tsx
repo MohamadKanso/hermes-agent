@@ -104,7 +104,7 @@ function renderConfigSettings(activeSectionId = 'safety') {
     </MemoryRouter>
   )
 
-  return { importInputRef }
+  return { importInputRef, queryClient: client }
 }
 
 describe('ConfigSettings autosave', () => {
@@ -229,6 +229,92 @@ describe('ConfigSettings autosave', () => {
     }
   })
 
+  it('debounces voice discovery while the selected voice is being edited', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices --current {voice}',
+            voice: 'starting-voice'
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+    getCommandTtsVoices.mockResolvedValue({
+      available: true,
+      provider: 'piper-custom',
+      current: 'starting-voice',
+      voices: [{ id: 'starting-voice', label: 'starting voice' }]
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('voice')
+      await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(1))
+      const input = document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"] [role="combobox"]')
+      expect(input).not.toBeNull()
+
+      fireEvent.change(input!, { target: { value: 'first-edit' } })
+      await act(async () => vi.advanceTimersByTimeAsync(100))
+      fireEvent.change(input!, { target: { value: 'final-voice' } })
+      await act(async () => vi.advanceTimersByTimeAsync(349))
+
+      expect(getCommandTtsVoices).toHaveBeenCalledTimes(1)
+
+      await act(async () => vi.advanceTimersByTimeAsync(1))
+      await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(2))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('hides cached voice choices when a background refresh fails', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices',
+            voice: 'current-voice'
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+    getCommandTtsVoices
+      .mockResolvedValueOnce({
+        available: true,
+        provider: 'piper-custom',
+        current: 'current-voice',
+        voices: [
+          { id: 'current-voice', label: 'current voice' },
+          { id: 'stale-choice', label: 'stale choice' }
+        ]
+      })
+      .mockRejectedValueOnce(new Error('voice query failed'))
+
+    const { queryClient } = renderConfigSettings('voice')
+
+    await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(1))
+    const input = document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"] [role="combobox"]')
+    expect(input).not.toBeNull()
+    fireEvent.focus(input!)
+    expect(await screen.findByRole('option', { name: 'stale choice' })).toBeTruthy()
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['command-tts-voices'] })
+    })
+    await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(screen.queryByRole('option', { name: 'stale choice' })).toBeNull())
+    expect((input as HTMLInputElement).value).toBe('current-voice')
+  })
+
   it('keeps the manual voice field available when discovery rejects', async () => {
     getHermesConfigRecord.mockResolvedValue({
       tts: {
@@ -291,6 +377,7 @@ describe('ConfigSettings autosave', () => {
     connectionIdMock.set('gateway-b')
 
     await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(2))
+    expect(pending).toHaveLength(2)
     expect(getCommandTtsVoices.mock.calls[0]).toEqual([
       'piper-custom',
       { connectionId: 'gateway-a', profile: 'profile-a' }

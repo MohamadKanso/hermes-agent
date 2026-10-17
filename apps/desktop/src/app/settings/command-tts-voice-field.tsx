@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 
+import { useDebounced } from '@/app/hooks/use-debounced'
 import type { ResolvedOwner } from '@/api/client'
 import { getCommandTtsVoices, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -87,8 +88,16 @@ export function CommandTtsVoiceField({
   const provider = selectedCommandTtsVoiceProvider(config)
   const requestOwner = commandTtsVoiceRequestOwner(profile, connectionId)
   const configSignature = commandTtsVoiceConfigSignature(config, provider)
-  const { data } = useQuery({
-    queryKey: commandTtsVoiceQueryKey(profile, connectionId, activeProfile, provider?.name ?? null, configSignature),
+  const debouncedConfigSignature = useDebounced(configSignature, 350)
+  const configIsSettled = configSignature === debouncedConfigSignature
+  const { data, isRefetchError } = useQuery({
+    queryKey: commandTtsVoiceQueryKey(
+      profile,
+      connectionId,
+      activeProfile,
+      provider?.name ?? null,
+      debouncedConfigSignature
+    ),
     queryFn: () => {
       if (!provider) {
         throw new Error('command TTS provider is not configured')
@@ -96,7 +105,7 @@ export function CommandTtsVoiceField({
 
       return getCommandTtsVoices(provider.name, requestOwner)
     },
-    enabled: Boolean(provider?.hasVoiceCommand),
+    enabled: Boolean(provider?.hasVoiceCommand && configIsSettled),
     retry: false,
     // passthrough values stay server-side, so refresh cached results on revisit or focus
     staleTime: 0,
@@ -112,7 +121,7 @@ export function CommandTtsVoiceField({
   const schemaKey = voicePath.join('.')
   const configuredVoice = getNested(config, voicePath)
   const current = String(configuredVoice ?? data?.current ?? '').trim()
-  const voices = data?.available ? data.voices : []
+  const voices = configIsSettled && !isRefetchError && data?.available ? data.voices : []
   const options = [...new Set([...voices.map(voice => voice.id), current].filter(Boolean))]
   const optionLabels = Object.fromEntries(voices.map(voice => [voice.id, voice.label]))
 
