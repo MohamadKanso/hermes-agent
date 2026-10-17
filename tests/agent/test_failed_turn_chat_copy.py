@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.error_classifier import classify_api_error
+from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
 from agent.error_surface import LAYER_GATEWAY, LAYER_PROVIDER, build_error_surface_from_result
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
-from agent.turn_failure_copy import SITE_FAILURE_CODES
+from agent.turn_failure_copy import SITE_FAILURE_CODES, exhausted_copy
 from agent.turn_response_check import retry_invalid_response
 
 
@@ -147,6 +147,45 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
         base_url="https://openrouter.ai/api/v1", model="m",
     )
     assert "Wait a minute" in plain["final_response"] and "resets in" not in plain["final_response"]
+
+
+@pytest.mark.parametrize(("reset_offset", "shows_deadline"), [(61, True), (-1, False)])
+def test_short_rate_limit_reset_copy_uses_only_future_deadlines(monkeypatch, reset_offset, shows_deadline):
+    now = 1_800_000_000.0
+    reset_at = now + reset_offset
+    monkeypatch.setattr("agent.turn_recovery.time.time", lambda: now)
+    error = _Http(429, "HTTP 429: rate limit exceeded")
+    classified = ClassifiedError(
+        reason=FailoverReason.rate_limit,
+        error_context={"reset_at": reset_at},
+    )
+
+    result = max_retries_exhausted_result(
+        _Agent(), error, classified, attempts=3, is_rate_limited=True, error_msg=str(error).lower(),
+        api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
+        approx_tokens=10, provider="openrouter", base_url="https://openrouter.ai/api/v1", model="m",
+    )
+
+    text = result["final_response"]
+    if shows_deadline:
+        assert "Limit resets at" in text and "in 2m" in text
+        assert "Try again after that" in text and "/model" in text
+        assert "Wait a minute and send /retry" not in text
+    else:
+        assert "Wait a minute and send /retry" in text
+        assert "Limit resets at" not in text
+
+
+@pytest.mark.parametrize(("attempts", "reset_seconds"), [(1, 61), (3, 120)])
+def test_existing_reset_copy_paths_keep_their_relative_wording(attempts, reset_seconds):
+    now = 1_800_000_000.0
+    text = exhausted_copy(
+        FailoverReason.rate_limit.value, label="OpenRouter", attempts=attempts, summary="rate limit exceeded",
+        reset_seconds=reset_seconds, resets_at=now + reset_seconds, now=now,
+    )
+
+    assert "resets in" in text
+    assert "Limit resets at" not in text
 
 
 def test_invalid_response_stamps_reason_from_embedded_provider_code():

@@ -1212,9 +1212,12 @@ def max_retries_exhausted_result(
         # Every surface reads final_response (the 💡 lines above are CLI-only), so the chat
         # text carries the plain what-happened + next step itself.
         _reset_at = classified.error_context.get("reset_at")
+        _reset_now = time.time() if _reset_at is not None else None
         _final_response = exhausted_copy(
             classified.reason.value, label=provider_label_for(provider), attempts=attempts,
-            summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
+            summary=_final_summary,
+            reset_seconds=_reset_at - _reset_now if _reset_now is not None else None,
+            resets_at=_reset_at, now=_reset_now,
         )
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
