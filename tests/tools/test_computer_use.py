@@ -2078,7 +2078,14 @@ class TestSessionLifecycle:
     """
 
     @staticmethod
-    def _recording_session(tool_names: set[str], *, tool_schemas: dict[str, dict] | None = None):
+    def _recording_session(
+        tool_names: set[str],
+        *,
+        tool_schemas: dict[str, dict] | None = None,
+        start_session_error: bool = False,
+        raise_start_session: bool = False,
+        cursor_motion_error: bool = False,
+    ):
         import asyncio
         from types import SimpleNamespace
         from unittest.mock import MagicMock
@@ -2110,12 +2117,17 @@ class TestSessionLifecycle:
 
             def call_tool(self, name, args, timeout=30.0):
                 self.calls.append((name, args))
+                if name == "start_session" and raise_start_session:
+                    raise RuntimeError("start_session failed")
                 return {
                     "data": "",
                     "images": [],
                     "image_mime_types": [],
                     "structuredContent": None,
-                    "isError": False,
+                    "isError": (
+                        (name == "start_session" and start_session_error)
+                        or (name == "set_agent_cursor_motion" and cursor_motion_error)
+                    ),
                 }
 
         return RecordingSession()
@@ -2212,7 +2224,7 @@ class TestSessionLifecycle:
 
         backend = CuaDriverBackend()
         backend._session = self._recording_session(
-            {"start_session", "end_session", "set_config"},
+            {"start_session", "end_session", "set_config", "set_agent_cursor_motion"},
             tool_schemas={"start_session": {"properties": {"cursor_motion": {"type": "object"}}}},
         )
         self._start_with_cursor_config(backend, no_overlay=False)
@@ -2222,6 +2234,36 @@ class TestSessionLifecycle:
             "session": backend._session_id,
             "cursor_motion": {"effects": {"glow": "on", "trail": "on", "ripple": "on"}},
         }
+        assert "set_agent_cursor_motion" not in [name for name, _ in backend._session.calls]
+
+    def test_high_visibility_falls_back_when_initial_cursor_motion_is_rejected(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self._recording_session(
+            {"start_session", "end_session", "set_config", "set_agent_cursor_motion"},
+            tool_schemas={"start_session": {"properties": {"cursor_motion": {"type": "object"}}}},
+            start_session_error=True,
+            cursor_motion_error=True,
+        )
+        self._start_with_cursor_config(backend, no_overlay=False)
+
+        calls = [name for name, _ in backend._session.calls]
+        assert calls.count("set_agent_cursor_motion") == 1
+
+    def test_high_visibility_falls_back_when_initial_cursor_motion_raises(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self._recording_session(
+            {"start_session", "end_session", "set_config", "set_agent_cursor_motion"},
+            tool_schemas={"start_session": {"properties": {"cursor_motion": {"type": "object"}}}},
+            raise_start_session=True,
+        )
+        self._start_with_cursor_config(backend, no_overlay=False)
+
+        calls = [name for name, _ in backend._session.calls]
+        assert calls.count("set_agent_cursor_motion") == 1
 
     def test_high_visibility_is_skipped_when_cursor_overlay_is_disabled(self):
         from tools.computer_use.cua_backend import CuaDriverBackend
