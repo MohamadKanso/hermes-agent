@@ -253,6 +253,11 @@ def command_deletes_runtime(command: str) -> Optional[str]:
     """
     if not command or not command.strip():
         return None
+    try:
+        from tools.shell_heredoc import mask_heredoc_bodies_for_detection
+        command = mask_heredoc_bodies_for_detection(command)
+    except Exception:
+        pass
     protected = _protected()
     if not protected:
         return None

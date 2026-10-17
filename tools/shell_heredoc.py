@@ -229,3 +229,196 @@ def strip_inert_heredoc_bodies(command: str) -> str:
         parts += [command[previous:start], "\n" * command.count("\n", start, end)]
         previous = end
     return "".join(parts) + command[previous:]
+
+
+def _scan_dollar_paren_end(command: str, start: int) -> int:
+    """find the end of a $(...) command substitution."""
+    depth = 1
+    quote: str | None = None
+    i = start + 2
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote is not None:
+            if ch == "\\" and quote != "'" and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+        elif ch in "'\"":
+            quote = ch
+            i += 1
+        elif ch == "\\" and i + 1 < n:
+            i += 2
+        elif command.startswith("$(", i):
+            depth += 1
+            i += 2
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+            i += 1
+        else:
+            i += 1
+    return n
+
+
+def _scan_backtick_end(command: str, start: int) -> int:
+    """find the end of a backtick command substitution."""
+    i = start + 1
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+        elif ch == "`":
+            return i + 1
+        else:
+            i += 1
+    return n
+
+
+def mask_heredoc_bodies_for_detection(command: str) -> str:
+    """mask heredoc bodies and operators with spaces for shell detection passes.
+
+    replaces heredoc bodies, declaration operators, and terminators with spaces
+    of the same length, preserving exact byte offsets and newlines. for unquoted
+    delimiters, nested command substitutions $(...) and backticks are preserved so
+    that commands inside them remain visible to detection passes. unterminated
+    heredocs fail closed (left untouched) so downstream guards see subsequent lines.
+    """
+    if "<<" not in command:
+        return command
+
+    chars = list(command)
+    n = len(command)
+    pos = 0
+    quote: str | None = None
+    line_heredocs: list[tuple[int, int, str, bool, bool]] = []
+
+    while pos < n:
+        ch = command[pos]
+        if quote is not None:
+            if ch == "\\" and quote != "'" and pos + 1 < n:
+                pos += 2
+                continue
+            if ch == quote:
+                quote = None
+            pos += 1
+            continue
+
+        if ch in "'\"":
+            quote = ch
+            pos += 1
+            continue
+        if ch == "`":
+            quote = ch
+            pos += 1
+            continue
+        if ch == "\\" and pos + 1 < n:
+            pos += 2
+            continue
+        if ch == "#" and (pos == 0 or command[pos - 1].isspace() or command[pos - 1] in ";&|()"):
+            nl = command.find("\n", pos)
+            pos = n if nl == -1 else nl
+            continue
+        if command.startswith("$((", pos):
+            arith_depth = 2
+            pos += 3
+            while pos < n and arith_depth > 0:
+                if command[pos] == "(":
+                    arith_depth += 1
+                elif command[pos] == ")":
+                    arith_depth -= 1
+                pos += 1
+            continue
+        if command.startswith("((", pos) and (pos == 0 or command[pos - 1].isspace() or command[pos - 1] in ";&|"):
+            arith_depth = 2
+            pos += 2
+            while pos < n and arith_depth > 0:
+                if command[pos] == "(":
+                    arith_depth += 1
+                elif command[pos] == ")":
+                    arith_depth -= 1
+                pos += 1
+            continue
+
+        if command.startswith("<<<", pos):
+            pos += 3
+            continue
+        if command.startswith("<<", pos):
+            parsed = _parse_heredoc_operator(command, pos)
+            if parsed is not None:
+                end_idx, delimiter, strip_tabs, is_q = parsed
+                line_heredocs.append((pos, end_idx, delimiter, strip_tabs, is_q))
+                pos = end_idx
+                continue
+            pos += 2
+            continue
+
+        if ch == "\n":
+            pos += 1
+            if line_heredocs:
+                body_cursor = pos
+                plan = []
+                temp_cursor = body_cursor
+                all_terminated = True
+                for op_start, op_end, delimiter, strip_tabs, is_q in line_heredocs:
+                    close_info = None
+                    curr = temp_cursor
+                    while True:
+                        newline = command.find("\n", curr)
+                        after = len(command) if newline == -1 else newline + 1
+                        line = command[curr:after].removesuffix("\n").removesuffix("\r")
+                        candidate = line.lstrip("\t") if strip_tabs else line
+                        candidate_is_term = candidate == delimiter or (
+                            len(candidate) == len(delimiter) and candidate.strip() == ""
+                        )
+                        if candidate_is_term:
+                            close_info = (curr, after)
+                            break
+                        if newline == -1:
+                            break
+                        curr = after
+                    if close_info is None:
+                        all_terminated = False
+                        break
+                    term_start, term_after = close_info
+                    plan.append((op_start, op_end, temp_cursor, term_start, term_start, term_after, is_q))
+                    temp_cursor = term_after
+
+                if not all_terminated:
+                    # fail closed: unterminated heredoc, do not mask
+                    line_heredocs.clear()
+                    continue
+
+                for _, _, b_start, b_end, term_start, term_after, is_q in plan:
+                    if is_q:
+                        for idx in range(b_start, b_end):
+                            if chars[idx] not in "\r\n":
+                                chars[idx] = " "
+                    else:
+                        idx = b_start
+                        while idx < b_end:
+                            if command.startswith("$(", idx):
+                                sub_end = min(b_end, _scan_dollar_paren_end(command, idx))
+                                idx = sub_end
+                            elif command[idx] == "`":
+                                sub_end = min(b_end, _scan_backtick_end(command, idx))
+                                idx = sub_end
+                            else:
+                                if chars[idx] not in "\r\n":
+                                    chars[idx] = " "
+                                idx += 1
+                    for idx in range(term_start, term_after):
+                        if chars[idx] not in "\r\n":
+                            chars[idx] = " "
+
+                pos = temp_cursor
+                line_heredocs.clear()
+            continue
+
+        pos += 1
+
+    return "".join(chars)

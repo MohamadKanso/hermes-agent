@@ -12,6 +12,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.shell_heredoc import mask_heredoc_bodies_for_detection
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -176,6 +178,7 @@ def _mask_quoted_prose(command: str) -> str:
     text inside single or double quotes is data the shell passes as an argument, so `echo "cat f >
     /dev/sda"` must not trip the unconditional floor (#93392). Unquoted text is untouched.
     """
+    command = mask_heredoc_bodies_for_detection(command)
     return "".join(
         command[i:j] if quote is None or kind in ("quote", "subst") else " " * (j - i)
         for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True)
@@ -191,6 +194,7 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     """Detect ``sudo -S`` without configured SUDO_PASSWORD -> (is_blocked, description). When
     SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S`` itself, so this guard only
     fires when the LLM wrote it explicitly."""
+    command = mask_heredoc_bodies_for_detection(command)
     if "SUDO_PASSWORD" not in os.environ and _SUDO_STDIN_RE.search(_normalize_command_for_detection(command).lower()):
         return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
@@ -198,6 +202,7 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+    command = mask_heredoc_bodies_for_detection(command)
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -1390,6 +1395,7 @@ def _deny_command_variants(command: str):
     the original quote state, preserve path-specific rules, and fold only the
     executable basename (never arbitrary argument paths).
     """
+    command = mask_heredoc_bodies_for_detection(command)
     yield from _command_detection_variants(command)
     pending, seen = [command], set()
     while pending:
@@ -1456,6 +1462,8 @@ def _command_detection_variants(command: str):
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
+    if command != normalized:
+        pending.append(command)
     while pending:
         for _, payload in _execution_flag_findings(pending.pop()):
             if fresh(payload):
@@ -1547,6 +1555,7 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
 
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
+    command = mask_heredoc_bodies_for_detection(command)
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
