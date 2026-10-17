@@ -98,7 +98,10 @@ export function CommandTtsVoiceField({
     },
     enabled: Boolean(provider?.hasVoiceCommand),
     retry: false,
-    staleTime: 30_000
+    // passthrough values stay server-side, so refresh cached results on revisit or focus
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always'
   })
 
   if (!provider) {

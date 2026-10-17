@@ -409,7 +409,7 @@ export function selectedCommandTtsVoiceProvider(
   const configPath = isPlainObject(nested) ? ['tts', 'providers', name] : ['tts', name]
   const providerConfig = isPlainObject(nested) ? nested : legacy
 
-  if (!isPlainObject(providerConfig)) {
+  if (!isPlainObject(providerConfig) || !isCommandProvider(providerConfig)) {
     return null
   }
 

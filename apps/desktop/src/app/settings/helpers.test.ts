@@ -93,6 +93,18 @@ describe('settings helpers', () => {
       expect(getNested(updated, voicePath)).toBe('en_US-lessac-medium')
       expect(getNested(updated, 'tts.providers.my.tts.voice')).toBeUndefined()
     })
+
+    it('follows canonical provider precedence over a conflicting legacy command block', () => {
+      expect(
+        selectedCommandTtsVoiceProvider({
+          tts: {
+            provider: 'mytts',
+            providers: { mytts: { type: 'api', endpoint: 'http://localhost' } },
+            mytts: { command: 'say', voices_command: 'say --voices' }
+          }
+        })
+      ).toBeNull()
+    })
   })
 
   it('does not shadow the backend schema options for memory.provider', () => {

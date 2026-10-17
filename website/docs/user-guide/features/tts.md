@@ -315,7 +315,7 @@ tts:
       voices_command: "my-tts list-voices"
 ```
 
-Set `voices_command` when your provider can list voices. hermes runs it when desktop settings opens the voice page, then uses each non-empty stdout line as one voice id. The command has a 10-second wall-clock limit and a 64,000-character combined output cap. If discovery fails or is not configured, the usual editable voice field stays available.
+Set `voices_command` when your provider can list voices. hermes runs it when desktop settings opens the voice page, then uses each non-empty stdout line as one voice id. The command has a 10-second wall-clock limit and a 64,000-character combined output cap. Process cleanup can add a few seconds afterward, so this is not a strict page-load deadline. If discovery fails or is not configured, the usual editable voice field stays available.
 
 **Supported `output_format` values:** `mp3` (default), `wav`, `ogg`, `flac`, `m4a`, `aac`, `amr`, `opus`. Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only validates the declared value and names the output file accordingly. An unknown value falls back to `mp3`. The chosen format is also exposed to the command as the `{format}` placeholder.
 

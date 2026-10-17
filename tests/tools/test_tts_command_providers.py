@@ -198,7 +198,7 @@ def test_command_provider_decodes_split_utf8_and_normalizes_newlines(monkeypatch
         pid = 4242
         returncode = 0
         stdout = Stream([b"\xe2", b"\x82", b"\xac\r", b"\nnext\r\n"])
-        stderr = Stream([])
+        stderr = Stream([b"\xc3", b"\xa9\r\n"])
 
         def poll(self):
             return 0
@@ -211,6 +211,7 @@ def test_command_provider_decodes_split_utf8_and_normalizes_newlines(monkeypatch
     result = _run_command_tts("fake command", timeout=1)
 
     assert result.stdout == "€\nnext\n"
+    assert result.stderr == "é\n"
 
 
 @pytest.mark.platforms("posix")
