@@ -397,7 +397,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
         # must never be held across an await (the RLock is reentrant per-thread, so a second
         # coroutine interleaving on the event-loop thread could cross-restore module globals).
-        if model and not body.confirm_expensive_model:
+        if model and not body.confirm_expensive_model and task != "__reset__":
             try:
                 from hermes_cli.model_selection_guards import combined_selection_warning
 

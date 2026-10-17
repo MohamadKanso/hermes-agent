@@ -479,6 +479,51 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('prompts on confirm_required when assigning an auxiliary task and retries on confirm (#140545)', async () => {
+    setModelAssignment
+      .mockResolvedValueOnce({
+        ok: false,
+        scope: 'auxiliary',
+        task: 'vision',
+        provider: 'nous',
+        model: 'hermes-4',
+        confirm_required: true,
+        confirm_message: 'aux model requires confirmation'
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        scope: 'auxiliary',
+        task: 'vision',
+        provider: 'nous',
+        model: 'hermes-4'
+      })
+
+    renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    await waitFor(() => {
+      const notifications = $notifications.get()
+      expect(notifications.some(n => n.kind === 'warning')).toBe(true)
+    })
+
+    const warning = $notifications.get().find(n => n.kind === 'warning')
+    act(() => {
+      warning?.action?.onClick?.()
+    })
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenLastCalledWith({
+        model: 'hermes-4',
+        provider: 'nous',
+        scope: 'auxiliary',
+        task: 'vision',
+        confirm_expensive_model: true
+      })
+    )
+  })
+
   it('keeps config-backed settings usable when live model metadata times out (#63214)', async () => {
     getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
 

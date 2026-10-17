@@ -39,28 +39,27 @@ function confirmModelWarning(message: string): Promise<boolean> {
   })
 }
 
-export async function setMainModelAssignment(
-  request: Omit<ModelAssignmentRequest, 'scope'>,
+export async function setModelAssignmentWithGuards(
+  request: ModelAssignmentRequest,
   scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
-  // Only pass the extra arg when a scope override exists, so unscoped callers
+  // only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
-  const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
+  const assign = (body: ModelAssignmentRequest) =>
     scopeProfile == null
-      ? setModelAssignment({ ...body, scope: 'main' })
-      : setModelAssignment({ ...body, scope: 'main' }, scopeProfile)
+      ? setModelAssignment(body)
+      : setModelAssignment(body, scopeProfile)
 
   let result = await assign(request)
 
-  // Backend demands an explicit ack before persisting a model that trips a
+  // backend demands an explicit ack before persisting a model that trips a
   // selection guard (expensive / data-training tiers like *-contributor).
-  // Settings used to throw confirm_message as a red error, so Apply could
-  // never persist. Prompt, then retry with confirm_expensive_model.
+  // prompt, then retry with confirm_expensive_model.
   if (result.confirm_required) {
     if (request.confirm_expensive_model || options?.skipConfirmPrompt) {
-      // Already acked, or headless onboarding (nothing mounted to click).
-      // Fail closed instead of recursing / dangling a prompt.
+      // already acked, or headless onboarding (nothing mounted to click).
+      // fail closed instead of recursing / dangling a prompt.
       throw new Error(result.confirm_message?.trim() || translateNow('modelAssignment.saveFailed'))
     }
 
@@ -80,4 +79,12 @@ export async function setMainModelAssignment(
   }
 
   return result
+}
+
+export async function setMainModelAssignment(
+  request: Omit<ModelAssignmentRequest, 'scope'>,
+  scopeProfile?: ProfileScope,
+  options?: { skipConfirmPrompt?: boolean }
+): Promise<ModelAssignmentResponse> {
+  return setModelAssignmentWithGuards({ ...request, scope: 'main' }, scopeProfile, options)
 }
