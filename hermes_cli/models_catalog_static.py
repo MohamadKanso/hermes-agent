@@ -72,6 +72,10 @@ _OPENROUTER_ONLY = {
     "stealth/union-alpha",
 }
 
+_NOUS_PORTAL_ONLY_MODELS = [
+    "reflection/beam-1.0-501b-a23b", "reflection/beam-1.0-501b-a23b:free",
+]
+
 
 # Fallback Vercel AI Gateway snapshot (open-weight first, then closed-source by family). Slugs
 # match Vercel's /v1/models catalog (``alibaba/`` for Qwen, ``zai/`` and ``xai/`` without hyphens).
@@ -173,7 +177,8 @@ _XAI_MODELS = _xai_curated_models()
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
-    "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")],
+    "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")]
+    + _NOUS_PORTAL_ONLY_MODELS,
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
