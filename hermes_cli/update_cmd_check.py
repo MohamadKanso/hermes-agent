@@ -223,10 +223,11 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     original = deepcopy(channel_record(require_readable_config_before_write(
         Path(request["home"]) / "config.yaml"), root))
     print(f"→ Update channel: {selected}")
+    forward_only = rides_default_channel(original, selected, root)
     try:
         with retrying_reads():
             target = resolve_source_target(selected, git_cmd, root,
-                                           forward_only=rides_default_channel(original, selected, root))
+                                           forward_only=forward_only)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected} source channel: {exc}. No update was applied.")
         stop()
@@ -236,9 +237,12 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
         print(f"→ {selected} retired; source destination: {target.channel}")
         if not getattr(args, "channel", None) and original.get("channel", "main") == selected:
             request["channel_retirement"] = {"original": original, "destination": target.channel}
+    request["forward_only"] = forward_only
     if target.commit:
         print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
         request["expected_sha"] = target.commit
+        request["release_version"] = target.version
+        request["release_channel"] = target.channel
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
     request["branch"] = target.branch

@@ -134,6 +134,12 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
         return head
     # A shallow boundary makes exit 1 a guess; full history makes it proof.
     if ancestry is not None and ancestry.returncode == 1:
+        from pathlib import Path
+        from hermes_cli.update_downgrade_guard import target_predates_runtime
+
+        if target_predates_runtime(git_cmd, Path(cwd), commit):
+            # a target that predates the runtime ledger is a downgrade so keep head
+            return head
         shallow = _probe(git_cmd, cwd, "rev-parse", "--is-shallow-repository")
         if shallow is not None and shallow.stdout.strip() == "false":
             return None

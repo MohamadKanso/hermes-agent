@@ -39,7 +39,10 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str) -> bool:
         return False  # forward update: whatever the target's schema, it was written knowing this one
     if git("cat-file", "-e", f"{target_ref}^{{commit}}") != 0:
         return False
-    # Exit 1 = no match (the target lacks the ledger); 0 = found; anything else is a git error.
+    # head must define the runtime ledger for a target to predate it
+    if git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, "HEAD", "--", "hermes_state*.py") != 0:
+        return False
+    # exit 1 = no match (the target lacks the ledger); 0 = found; anything else is a git error.
     return git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", "hermes_state*.py") == 1
 
 

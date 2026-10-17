@@ -1922,6 +1922,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
             sys.exit(1)
 
+        if completion_request.get("forward_only") and not target_is_head and release_sha:
+            from hermes_cli.update_downgrade_guard import target_predates_runtime
+
+            if target_predates_runtime(git_cmd, _m().PROJECT_ROOT, target_ref):
+                # an unchosen default subscription only moves forward; a fetched target that
+                # predates the gateway runtime cannot downgrade this checkout
+                channel = completion_request.get("release_channel", "stable")
+                ver = completion_request.get("release_version")
+                ver_str = f" v{ver}" if ver else ""
+                print(f"→ Release: {channel}{ver_str}; this checkout is newer and waits for the next release"
+                      " (`hermes update --set-channel main` follows every commit)")
+                target_is_head = True
+                head_sha = _git_run(git_cmd, ["rev-parse", "HEAD"]).stdout.strip()
+                target_ref = head_sha
+                release_sha = head_sha
+                completion_request["expected_sha"] = head_sha
+
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
