@@ -4,6 +4,7 @@ import contextlib
 import datetime
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -249,6 +250,170 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
     asyncio.run(scenario())
     assert log.index("done:slow") < log.index("dispatch:fast")
     assert ids().index("r1") < ids().index("r2")
+
+
+def test_ws_context_breakdown_does_not_block_control_read(monkeypatch):
+    """a slow read-only context snapshot must not starve the next control read."""
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    monkeypatch.setattr(server, "resolve_skin", dict)
+    monkeypatch.setattr(server, "register_live_transport", lambda transport: None)
+    monkeypatch.setattr(server, "unregister_live_transport", lambda transport: None)
+    monkeypatch.setattr(ws_mod, "_start_backend_liveness", lambda: None)
+    monkeypatch.setattr(server, "_close_sessions_for_transport", lambda transport, end_reason: (0, 0))
+    monkeypatch.setattr(server, "_release_wake_for_transport", lambda transport: None)
+    inbound: asyncio.Queue = asyncio.Queue()
+    sent = []
+    context_started = asyncio.Event()
+    context_release = asyncio.Event()
+    control_read = asyncio.Event()
+    context_finished = asyncio.Event()
+
+    class FakeAuthority:
+        actor = SimpleNamespace(profile_id="test")
+        authority = SimpleNamespace(sessions={"s": object()})
+
+        async def dispatch(self, request):
+            if request["method"] == "session.context_breakdown":
+                context_started.set()
+                await context_release.wait()
+                context_finished.set()
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"context": True}}
+            if request["method"] == "session.control.read":
+                control_read.set()
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"control": True}}
+            raise AssertionError(request)
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(ws_mod, "_authority_connection", lambda *args, **kwargs: FakeAuthority())
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            frame = await inbound.get()
+            if frame is None:
+                raise ws_mod._WebSocketDisconnect()
+            return json.dumps(frame)
+
+        async def close(self, **kwargs):
+            pass
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(FakeWS()))
+        inbound.put_nowait({**_rpc("context", "session.context_breakdown"), "params": {"session_id": "s"}})
+        inbound.put_nowait({**_rpc("control", "session.control.read"), "params": {"session_id": "s"}})
+        await asyncio.wait_for(context_started.wait(), 2)
+        await asyncio.wait_for(control_read.wait(), 2)
+        assert not context_finished.is_set()
+        context_release.set()
+        await asyncio.wait_for(context_finished.wait(), 2)
+        inbound.put_nowait(None)
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    response_ids = [frame["id"] for frame in sent if "id" in frame]
+    assert set(response_ids) == {"context", "control"}
+    assert response_ids.index("control") < response_ids.index("context")
+
+
+def test_ws_context_breakdown_lane_rejects_malformed_or_unloaded_requests():
+    connection = SimpleNamespace(authority=SimpleNamespace(sessions={"s": object()}))
+    valid = {"method": "session.context_breakdown", "params": {"session_id": "s"}}
+
+    assert ws_mod._is_concurrent_read(connection, valid)
+    assert not ws_mod._is_concurrent_read(connection, {**valid, "method": []})
+    assert not ws_mod._is_concurrent_read(connection, {**valid, "params": {"session_id": "missing"}})
+
+
+def test_ws_context_breakdown_backlog_returns_error_without_starving_control(monkeypatch):
+    """extra context snapshots get an explicit error while a control read still completes."""
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    monkeypatch.setattr(server, "resolve_skin", dict)
+    monkeypatch.setattr(server, "register_live_transport", lambda transport: None)
+    monkeypatch.setattr(server, "unregister_live_transport", lambda transport: None)
+    monkeypatch.setattr(ws_mod, "_start_backend_liveness", lambda: None)
+    monkeypatch.setattr(server, "_close_sessions_for_transport", lambda transport, end_reason: (0, 0))
+    monkeypatch.setattr(server, "_release_wake_for_transport", lambda transport: None)
+    inbound: asyncio.Queue = asyncio.Queue()
+    sent = []
+    release = asyncio.Event()
+    active_started = asyncio.Event()
+    overflow_sent = asyncio.Event()
+    control_sent = asyncio.Event()
+    active = 0
+
+    class FakeAuthority:
+        actor = SimpleNamespace(profile_id="test")
+        authority = SimpleNamespace(sessions={"s": object()})
+
+        async def dispatch(self, request):
+            nonlocal active
+            if request["method"] == "session.context_breakdown":
+                active += 1
+                if active == ws_mod._WS_CONCURRENT_READ_MAX:
+                    active_started.set()
+                await release.wait()
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"context": True}}
+            if request["method"] == "session.control.read":
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"control": True}}
+            raise AssertionError(request)
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(ws_mod, "_authority_connection", lambda *args, **kwargs: FakeAuthority())
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            frame = json.loads(line)
+            sent.append(frame)
+            if frame.get("id") == "overflow":
+                overflow_sent.set()
+            if frame.get("id") == "control":
+                control_sent.set()
+
+        async def receive_text(self):
+            frame = await inbound.get()
+            if frame is None:
+                raise ws_mod._WebSocketDisconnect()
+            return json.dumps(frame)
+
+        async def close(self, **kwargs):
+            pass
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(FakeWS()))
+        total_reads = ws_mod._WS_CONCURRENT_READ_MAX + ws_mod._WS_CONCURRENT_READ_QUEUE_MAX + 1
+        for index in range(total_reads):
+            req_id = "overflow" if index == total_reads - 1 else f"context-{index}"
+            inbound.put_nowait({
+                **_rpc(req_id, "session.context_breakdown"),
+                "params": {"session_id": "s"},
+            })
+        inbound.put_nowait({**_rpc("control", "session.control.read"), "params": {"session_id": "s"}})
+        await asyncio.wait_for(active_started.wait(), 2)
+        await asyncio.wait_for(overflow_sent.wait(), 2)
+        await asyncio.wait_for(control_sent.wait(), 2)
+        release.set()
+        assert await _wait_for(
+            lambda: len([frame for frame in sent if frame.get("id", "").startswith("context-")]) == total_reads - 1
+        )
+        inbound.put_nowait(None)
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    overflow = next(frame for frame in sent if frame.get("id") == "overflow")
+    assert overflow["error"]["code"] == -32001
+    assert any(frame.get("id") == "control" for frame in sent)
 
 
 def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
