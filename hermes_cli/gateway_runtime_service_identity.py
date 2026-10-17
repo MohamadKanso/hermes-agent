@@ -5,6 +5,7 @@ programs. Manager-loaded values take precedence over filenames and disk copies.
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 from pathlib import Path
@@ -306,6 +307,21 @@ def read_definition(path: Path) -> bytes:
         return value
 
 
+def _decode_launcher_bytes(data: bytes) -> str:
+    """WSH honours a UTF-16 BOM; otherwise the file is an ANSI/UTF-8 byte stream."""
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        try:
+            return data.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    if data.startswith(codecs.BOM_UTF8):
+        try:
+            return data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            pass
+    return data.decode("utf-8")
+
+
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
     # Recognize the vendor's complete template, not a HERMES_HOME substring
     # inside an arbitrary executable script. Doubled quotes are VB literals.
@@ -379,6 +395,6 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
         _unverified()
-    configured, argv = _vbs_identity(read_definition(script).decode("utf-8"))
+    configured, argv = _vbs_identity(_decode_launcher_bytes(read_definition(script)))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

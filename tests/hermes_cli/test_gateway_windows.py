@@ -868,3 +868,106 @@ def test_decode_schtasks_output_honours_a_utf16_bom():
     text = "Herm\u00e9s"
     assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
     assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")
+
+
+def test_atomic_write_launcher_encodings(tmp_path):
+    """_atomic_write encodes .vbs as UTF-16 with a BOM so WSH parses non-ASCII paths,
+    and encodes .cmd as mbcs (or fallback on non-Windows) (#140682)."""
+    import codecs
+
+    vbs = tmp_path / "launcher.vbs"
+    cmd = tmp_path / "launcher.cmd"
+    txt = tmp_path / "notes.txt"
+
+    content = "' 个人程序\r\nOption Explicit\r\n"
+    gateway_windows._atomic_write(vbs, content, vbs.with_suffix(".tmp"))
+    vbs_bytes = vbs.read_bytes()
+    assert vbs_bytes[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+    assert vbs_bytes.decode("utf-16") == content
+
+    gateway_windows._atomic_write(cmd, "@echo off\r\n", cmd.with_suffix(".tmp"))
+    assert cmd.read_bytes().startswith(b"@echo off")
+
+    gateway_windows._atomic_write(txt, "test\n", txt.with_suffix(".tmp"))
+    assert txt.read_bytes() == b"test\n"
+
+
+def test_write_task_script_writes_utf16_vbs_with_bom_and_preserves_non_ascii(monkeypatch, tmp_path):
+    """_write_task_script writes the .vbs launcher with a UTF-16 BOM so non-ASCII HERMES_HOME
+    survives WSH execution without CP936/ANSI mojibake (#140682)."""
+    import codecs
+
+    home = tmp_path / "个人程序" / "Hermes"
+    home.mkdir(parents=True)
+    cmd_path = home / "gateway-service" / "Hermes_Gateway.cmd"
+    vbs_path = cmd_path.with_suffix(".vbs")
+    cmd_path.parent.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: cmd_path)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_launcher_settings",
+        lambda: (
+            r"C:\Python312\python.exe",
+            str(home),
+            str(home),
+            "",
+        ),
+    )
+
+    returned_path = gateway_windows._write_task_script()
+    assert returned_path == cmd_path
+    assert cmd_path.exists()
+    assert vbs_path.exists()
+
+    raw_vbs = vbs_path.read_bytes()
+    assert raw_vbs[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+    decoded_vbs = raw_vbs.decode("utf-16")
+    assert str(home) in decoded_vbs
+    assert "个人程序" in decoded_vbs
+    assert decoded_vbs.endswith("\r\n")
+
+
+def test_install_startup_entry_writes_utf16_vbs_with_bom(monkeypatch, tmp_path):
+    """Startup fallback .vbs entry is written in UTF-16 with a BOM (#140682)."""
+    import codecs
+
+    startup = tmp_path / "Startup"
+    startup.mkdir(parents=True)
+    entry = startup / "Hermes_Gateway.vbs"
+    script = tmp_path / "个人程序" / "gateway.cmd"
+    script.parent.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway.cmd")
+
+    result = gateway_windows._install_startup_entry(script)
+    assert result == entry
+    assert entry.exists()
+    raw = entry.read_bytes()
+    assert raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+    decoded = raw.decode("utf-16")
+    assert "个人程序" in decoded
+
+
+def test_atomic_write_falls_back_to_utf8_on_unicode_encode_error(monkeypatch, tmp_path):
+    """If encoding a .cmd as mbcs raises UnicodeEncodeError (e.g. CJK path under CP1252),
+    _atomic_write gracefully falls back to UTF-8 without crashing (#140682)."""
+    cmd = tmp_path / "launcher.cmd"
+    content = "@echo off\r\nset \"HERMES_HOME=D:\\个人程序\\Hermes\"\r\n"
+
+    original_write_text = Path.write_text
+
+    def fake_write_text(self, data, encoding=None, newline=None):
+        if encoding == "mbcs":
+            raise UnicodeEncodeError("mbcs", data, 0, 1, "character maps to <undefined>")
+        return original_write_text(self, data, encoding=encoding, newline=newline)
+
+    monkeypatch.setattr(gateway_windows.codecs, "lookup", lambda enc: None)  # simulate mbcs available
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    gateway_windows._atomic_write(cmd, content, cmd.with_suffix(".tmp"))
+    assert cmd.read_bytes().decode("utf-8") == content
+

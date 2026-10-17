@@ -550,3 +550,60 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_run", run)
     found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
     assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
+
+
+def test_decode_launcher_bytes_handles_all_encodings():
+    """_decode_launcher_bytes decodes UTF-16 with LE/BE BOM, UTF-8 with BOM, and plain UTF-8 (#140682)."""
+    import codecs
+    from hermes_cli.gateway_runtime_service_identity import _decode_launcher_bytes
+
+    text = "' 个人程序\r\nOption Explicit\r\n"
+    # UTF-16 LE with BOM
+    assert _decode_launcher_bytes(text.encode("utf-16")) == text
+    # UTF-16 BE with BOM
+    assert _decode_launcher_bytes(codecs.BOM_UTF16_BE + text.encode("utf-16-be")) == text
+    # UTF-8 with BOM (utf-8-sig)
+    assert _decode_launcher_bytes(codecs.BOM_UTF8 + text.encode("utf-8")) == text
+    # Plain UTF-8
+    assert _decode_launcher_bytes(text.encode("utf-8")) == text
+
+
+def test_verify_windows_task_with_utf16_launcher_and_non_ascii_home(tmp_path):
+    """verify_windows_task accepts UTF-16 BOM encoded .vbs launcher with non-ASCII home (#140682)."""
+    import sys
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "个人程序" / "Hermes"
+    home.mkdir(parents=True)
+    script = home / "gateway.vbs"
+    script_content = "\n".join([
+        "' Hermes Agent Gateway",
+        "Option Explicit",
+        "Dim sh, env, existing_pp",
+        'Set sh = CreateObject("WScript.Shell")',
+        'Set env = sh.Environment("PROCESS")',
+        f'env.Item("HERMES_HOME") = "{home}"',
+        'env.Item("HERMES_SUPERVISED_CHILD") = "1"',
+        f'env.Item("VIRTUAL_ENV") = "{home}"',
+        'existing_pp = env.Item("PYTHONPATH")',
+        'If Len(existing_pp) > 0 Then',
+        f'  env.Item("PYTHONPATH") = "{home};" & existing_pp',
+        'Else',
+        f'  env.Item("PYTHONPATH") = "{home}"',
+        'End If',
+        f'sh.CurrentDirectory = "{home}"',
+        f'sh.Run "{sys.executable} -m hermes_cli.main gateway run", 0, False',
+    ]) + "\n"
+
+    # Write as UTF-16 with BOM (what _atomic_write writes for .vbs)
+    script.write_text(script_content, encoding="utf-16")
+
+    user = r"DOMAIN\owner"
+    xml = _build_scheduled_task_xml("Hermes_Gateway", script, user)
+    # verify_windows_task should succeed and not raise UnicodeDecodeError
+    verify_windows_task(xml, home, user, "S-1-5-21-123")
+
+    # Also verify backwards compatibility with plain UTF-8
+    script.write_text(script_content, encoding="utf-8")
+    verify_windows_task(xml, home, user, "S-1-5-21-123")

@@ -466,6 +466,11 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+# These files are interpreted by wscript.exe / cmd.exe, not by Python: a BOM-less script is decoded
+# with the ANSI code page, which mangles any non-ASCII home path.
+_LAUNCHER_ENCODINGS = {".vbs": "utf-16", ".cmd": "mbcs", ".bat": "mbcs"}
+
+
 def _write_task_script() -> Path:
     """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
     launcher used by the Scheduled Task and Startup fallback. Return the .cmd path."""
@@ -487,8 +492,17 @@ def _atomic_write(path: Path, content: str, tmp: Path) -> None:
     inside the Startup folder itself, and Windows opens every file there at login — a leftover
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
     """
+    encoding = _LAUNCHER_ENCODINGS.get(path.suffix.lower(), "utf-8")
+    if encoding == "mbcs":
+        try:
+            codecs.lookup("mbcs")
+        except LookupError:
+            encoding = "utf-8"
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        try:
+            tmp.write_text(content, encoding=encoding, newline="")
+        except UnicodeEncodeError:
+            tmp.write_text(content, encoding="utf-8", newline="")
         tmp.replace(path)
     finally:
         try:
