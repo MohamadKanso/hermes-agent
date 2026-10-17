@@ -150,14 +150,26 @@ class TestOpenCodeGoDeepSeekThinking:
     """DeepSeek V4 models use DeepSeek-style thinking controls on OpenCode Go."""
 
 
-    def test_xhigh_and_max_normalize_to_max(self, opencode_go_profile):
-        for effort in ("xhigh", "max"):
-            extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
-                reasoning_config={"enabled": True, "effort": effort},
-                model="deepseek/deepseek-v4-pro",
-            )
-            assert extra_body == {}
-            assert top_level == {"reasoning_effort": "max"}
+    @pytest.mark.parametrize(
+        "effort, expected",
+        [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ],
+    )
+    def test_deepseek_effort_mapping(self, opencode_go_profile, effort, expected):
+        """the profile serializes deepseek effort aliases using the shared mapping"""
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="deepseek/deepseek-v4-pro",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": expected}
 
     @pytest.mark.parametrize("model", ["deepseek-flash", "deepseek/deepseek-flash"])
     def test_version_less_canonical_id_gets_the_controls(self, opencode_go_profile, model):

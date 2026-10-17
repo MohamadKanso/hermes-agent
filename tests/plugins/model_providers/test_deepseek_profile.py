@@ -45,21 +45,37 @@ class TestDeepSeekThinkingWireShape:
         assert top_level == {}
 
 
-    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
-    def test_standard_efforts_pass_through(self, deepseek_profile, effort):
-        _, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": effort},
-            model="deepseek-v4-pro",
+    @pytest.mark.parametrize(
+        "effort, expected",
+        [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "max"),
+            ("ultra", "max"),
+            ("  MEDIUM  ", "high"),
+        ],
+        ids=[
+            "minimal-low",
+            "low",
+            "medium-high",
+            "high",
+            "xhigh-high",
+            "max",
+            "ultra-max",
+            "normalized-medium",
+        ],
+    )
+    def test_documented_effort_mapping(self, deepseek_profile, effort, expected):
+        """the direct profile serializes each effort using deepseek's documented mapping"""
+        extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}, model="deepseek-v4-pro"
         )
-        assert top_level == {"reasoning_effort": effort}
 
-    @pytest.mark.parametrize("effort", ["xhigh", "max", "MAX", "  Max  "])
-    def test_xhigh_and_max_normalize_to_max(self, deepseek_profile, effort):
-        _, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": effort},
-            model="deepseek-v4-pro",
-        )
-        assert top_level == {"reasoning_effort": "max"}
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": expected}
 
     def test_explicitly_disabled_sends_disabled_marker(self, deepseek_profile):
         """``reasoning_config.enabled=False`` → ``thinking.type=disabled``.
