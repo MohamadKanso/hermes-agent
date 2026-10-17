@@ -17,12 +17,14 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from tools.tts_command_provider import (
+    CommandProviderOutputLimitError,
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
@@ -155,6 +157,135 @@ class TestCommandTtsEnv:
             ss.set_multiplex_active(False)
 
         assert result.stdout.strip() == "tok-work"
+
+
+def test_command_provider_stops_capturing_when_output_limit_is_exceeded():
+    command = _shell_command(sys.executable, "-c", "print('x' * 100000)")
+
+    with pytest.raises(CommandProviderOutputLimitError, match="capture limit"):
+        _run_command_tts(command, timeout=5, max_output_chars=32)
+
+
+def test_command_provider_wall_clock_limit_cannot_be_reset_by_output():
+    script = "import time; exec(\"while True:\\n print('tick', flush=True)\\n time.sleep(.01)\")"
+    command = _shell_command(sys.executable, "-c", script)
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        _run_command_tts(command, timeout=2, max_duration_seconds=0.15)
+
+    assert error.value.timeout == 0.15
+    assert time.monotonic() - started < 1
+
+
+def test_command_provider_decodes_split_utf8_and_normalizes_newlines(monkeypatch):
+    import tools.tts_command_provider as mod
+
+    class Buffer:
+        def __init__(self, chunks):
+            self.chunks = iter(chunks)
+
+        def read1(self, _size):
+            return next(self.chunks, b"")
+
+    class Stream:
+        encoding = "utf-8"
+
+        def __init__(self, chunks):
+            self.buffer = Buffer(chunks)
+
+    class Proc:
+        pid = 4242
+        returncode = 0
+        stdout = Stream([b"\xe2", b"\x82", b"\xac\r", b"\nnext\r\n"])
+        stderr = Stream([])
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(mod.subprocess, "Popen", lambda *_args, **_kwargs: Proc())
+
+    result = _run_command_tts("fake command", timeout=1)
+
+    assert result.stdout == "€\nnext\n"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass
+def test_idle_timeout_kills_child_after_shell_exits(tmp_path):
+    pid_file = tmp_path / "child.pid"
+    parent_script = (
+        "import subprocess,sys; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        "open(sys.argv[1],'w').write(str(child.pid))"
+    )
+    command = _shell_command(sys.executable, "-c", parent_script, str(pid_file))
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_command_tts(command, timeout=2)
+
+    child_pid = int(pid_file.read_text())
+    import psutil
+    from tests.waiting import wait_until
+
+    def child_is_gone_or_reaped():
+        try:
+            return psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return True
+
+    wait_until(child_is_gone_or_reaped, timeout=10, what="the command child to exit")
+
+
+@pytest.mark.platforms("posix")
+def test_process_group_escalation_permission_error_does_not_mask_timeout(monkeypatch):
+    import tools.tts_command_provider as mod
+
+    signals = []
+
+    class Proc:
+        pid = 4242
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if sig == mod.signal.SIGKILL:
+            raise PermissionError("group escalation is blocked")
+
+    monkeypatch.setattr(mod.os, "killpg", killpg)
+
+    mod.terminate_command_process_tree(Proc())
+
+    assert signals == [(4242, mod.signal.SIGTERM), (4242, mod.signal.SIGKILL)]
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.live_system_guard_bypass
+def test_idle_timeout_kills_windows_child_after_shell_exits(tmp_path):
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    parent_script = (
+        "import subprocess,sys; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        "open(sys.argv[1],'w').write(str(child.pid))"
+    )
+    command = _shell_command(sys.executable, "-c", parent_script, str(pid_file))
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_command_tts(command, timeout=2)
+
+    child_pid = int(pid_file.read_text())
+    from tests.waiting import wait_until
+
+    wait_until(lambda: not psutil.pid_exists(child_pid), timeout=10, what="the command child to exit")
+
 
 class TestGetNamedProviderConfig:
     def test_providers_block_wins(self):
@@ -624,6 +755,70 @@ class TestIdleKillConsoleHidden:
     (a console-subprocess) without ``CREATE_NO_WINDOW`` — the same bug class
     as the provider spawn itself, one code path later.
     """
+
+    def test_windows_tree_kill_runs_after_the_shell_has_exited(self, monkeypatch):
+        import tools.tts_command_provider as mod
+        from hermes_cli import _subprocess_compat
+
+        calls = []
+
+        class Proc:
+            pid = 4242
+
+            def poll(self):
+                return 0
+
+            def kill(self):
+                raise AssertionError("a finished shell should not need a direct kill")
+
+        monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: 0)
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda command, **kwargs: (
+                calls.append((command, kwargs)),
+                subprocess.CompletedProcess(command, 0),
+            )[1],
+        )
+
+        mod._terminate_windows_process_tree(Proc())
+
+        assert calls
+        assert calls[0][0] == ["taskkill", "/F", "/T", "/PID", "4242"]
+
+    def test_windows_process_table_fallback_finds_children_after_shell_exit(self, monkeypatch):
+        import psutil
+        import tools.tts_command_provider as mod
+        from hermes_cli import _subprocess_compat
+
+        killed = []
+
+        class Child:
+            def __init__(self, pid, parent_pid):
+                self.pid = pid
+                self.info = {"pid": pid, "ppid": parent_pid}
+
+            def kill(self):
+                killed.append(self.pid)
+
+        class Proc:
+            pid = 4242
+
+            def poll(self):
+                return 0
+
+        descendants = [Child(4244, 4243), Child(4243, 4242)]
+        monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: 0)
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
+        )
+        monkeypatch.setattr(psutil, "process_iter", lambda *_args, **_kwargs: descendants)
+
+        mod._terminate_windows_process_tree(Proc())
+
+        assert killed == [4244, 4243]
 
     @pytest.mark.platforms("windows")
     def test_idle_kill_taskkill_hides_console_windows(self, monkeypatch):

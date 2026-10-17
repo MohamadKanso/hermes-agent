@@ -290,6 +290,24 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     return {"available": True, "voices": voices}
 
 
+@router.get("/api/audio/tts/voices")
+async def get_command_tts_voices(provider: Optional[str] = None, profile: Optional[str] = None):
+    """list voices from a configured command tts provider in the requested profile."""
+    provider_name = (provider or "").strip()
+    if not provider_name:
+        return {"available": False, "provider": "", "voices": [], "current": ""}
+
+    from hermes_cli.web_routers.audio_command_voices import list_command_tts_voices
+
+    try:
+        return await _run_config_scoped(profile, lambda: list_command_tts_voices(provider_name))
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("Command TTS voice-list resolution failed")
+        return {"available": False, "provider": provider_name, "voices": [], "current": ""}
+
+
 @router.post("/api/audio/speak")
 async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     """Synthesize speech and return audio as base64 data URL.

@@ -790,5 +790,63 @@ class TestProfileScopedAudio:
     def test_audio_endpoints_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/audio/elevenlabs/voices?profile=ghost")
         assert resp.status_code == 404
+        resp = client.get("/api/audio/tts/voices?profile=ghost&provider=piper-custom")
+        assert resp.status_code == 404
         resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
         assert resp.status_code == 404
+
+    def test_command_tts_voice_list_reads_the_requested_profile(self, client, isolated_profiles, monkeypatch):
+        import subprocess
+
+        from hermes_constants import get_hermes_home
+        from tools import tts_command_provider
+
+        isolated_profiles["worker_beta"].joinpath("config.yaml").write_text(
+            yaml.safe_dump({
+                "tts": {
+                    "provider": "piper-custom",
+                    "providers": {
+                        "piper-custom": {
+                            "type": "command",
+                            "command": "piper speak",
+                            "voices_command": "piper --list-voices",
+                            "voice": "en_US-amy-medium",
+                        }
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        observed = {}
+
+        def run_command(command, timeout, env_passthrough=None, max_output_chars=None, max_duration_seconds=None):
+            observed["home"] = str(get_hermes_home())
+            observed["timeout"] = timeout
+            observed["max_output_chars"] = max_output_chars
+            observed["max_duration_seconds"] = max_duration_seconds
+            return subprocess.CompletedProcess(command, 0, "en_US-amy-medium\nen_GB-alan\n", "")
+
+        monkeypatch.setattr(tts_command_provider, "run_command_provider", run_command)
+        response = client.get("/api/audio/tts/voices", params={
+            "profile": "worker_beta", "provider": "piper-custom",
+        })
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "available": True,
+            "provider": "piper-custom",
+            "voices": [
+                {"id": "en_US-amy-medium", "label": "en_US-amy-medium"},
+                {"id": "en_GB-alan", "label": "en_GB-alan"},
+            ],
+            "current": "en_US-amy-medium",
+        }
+        assert observed["home"] == str(isolated_profiles["worker_beta"])
+        assert observed["timeout"] <= 10
+        assert observed["max_output_chars"] == 64_000
+        assert observed["max_duration_seconds"] == 10
+
+        # the default profile has no matching command provider and must not borrow the worker's list
+        response = client.get("/api/audio/tts/voices", params={"provider": "piper-custom"})
+        assert response.status_code == 200
+        assert response.json()["available"] is False

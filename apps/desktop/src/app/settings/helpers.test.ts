@@ -12,12 +12,89 @@ import {
   getNested,
   isExternalMemoryProvider,
   providerGroup,
+  selectedCommandTtsVoiceProvider,
   sectionFieldEntries,
   setNested,
   stripToolsetLabel
 } from './helpers'
 
 describe('settings helpers', () => {
+  describe('selectedCommandTtsVoiceProvider', () => {
+    it('uses the selected canonical command provider when it declares voice discovery', () => {
+      expect(
+        selectedCommandTtsVoiceProvider({
+          tts: {
+            provider: 'piper-custom',
+            providers: {
+              'piper-custom': {
+                type: 'command',
+                command: 'piper speak',
+                voices_command: 'piper --list-voices'
+              }
+            }
+          }
+        })
+      ).toEqual({
+        name: 'piper-custom',
+        configPath: ['tts', 'providers', 'piper-custom'],
+        hasVoiceCommand: true
+      })
+    })
+
+    it('keeps legacy command provider settings in their existing config path', () => {
+      expect(
+        selectedCommandTtsVoiceProvider({
+          tts: {
+            provider: 'mytts',
+            mytts: { command: 'say', voices_command: 'say --list-voices' }
+          }
+        })
+      ).toEqual({ name: 'mytts', configPath: ['tts', 'mytts'], hasVoiceCommand: true })
+    })
+
+    it('keeps command providers editable without discovery and ignores built-ins', () => {
+      expect(
+        selectedCommandTtsVoiceProvider({
+          tts: {
+            provider: 'edge',
+            providers: { edge: { type: 'command', command: 'say', voices_command: 'say voices' } }
+          }
+        })
+      ).toBeNull()
+      expect(
+        selectedCommandTtsVoiceProvider({
+          tts: {
+            provider: 'mytts',
+            providers: { mytts: { type: 'command', command: 'say' } }
+          }
+        })
+      ).toEqual({ name: 'mytts', configPath: ['tts', 'providers', 'mytts'], hasVoiceCommand: false })
+    })
+
+    it('keeps a dotted provider name as one config key', () => {
+      const config = {
+        tts: {
+          provider: 'my.tts',
+          providers: { 'my.tts': { type: 'command', command: 'say', voices_command: 'say --voices' } }
+        }
+      }
+
+      const provider = selectedCommandTtsVoiceProvider(config)
+
+      expect(provider).toEqual({
+        name: 'my.tts',
+        configPath: ['tts', 'providers', 'my.tts'],
+        hasVoiceCommand: true
+      })
+
+      const voicePath = [...provider!.configPath, 'voice']
+      const updated = setNested(config, voicePath, 'en_US-lessac-medium')
+
+      expect(getNested(updated, voicePath)).toBe('en_US-lessac-medium')
+      expect(getNested(updated, 'tts.providers.my.tts.voice')).toBeUndefined()
+    })
+  })
+
   it('does not shadow the backend schema options for memory.provider', () => {
     // memory.provider options are discovery-driven and served by the backend
     // config schema (merged per-request); enumOptionsFor must return undefined

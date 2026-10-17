@@ -52,6 +52,8 @@ export type {
   ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
+  CommandTtsVoice,
+  CommandTtsVoicesResponse,
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,

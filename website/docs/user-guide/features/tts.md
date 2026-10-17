@@ -312,7 +312,10 @@ tts:
       type: command
       command: "piper -m /path/to/custom.onnx -f {output_path} < {input_path}"
       output_format: wav
+      voices_command: "my-tts list-voices"
 ```
+
+Set `voices_command` when your provider can list voices. hermes runs it when desktop settings opens the voice page, then uses each non-empty stdout line as one voice id. The command has a 10-second wall-clock limit and a 64,000-character combined output cap. If discovery fails or is not configured, the usual editable voice field stays available.
 
 **Supported `output_format` values:** `mp3` (default), `wav`, `ogg`, `flac`, `m4a`, `aac`, `amr`, `opus`. Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only validates the declared value and names the output file accordingly. An unknown value falls back to `mp3`. The chosen format is also exposed to the command as the `{format}` placeholder.
 
@@ -380,6 +383,7 @@ Use `{{` and `}}` for literal braces.
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
+| `voices_command`   | unset   | optional command that prints one voice id per line for the desktop voice picker.                            |
 | `warm_command` / `release_command` | unset | Shell commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
 
 #### Behavior notes

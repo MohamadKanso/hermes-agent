@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { $activeConnectionId } from '@/store/connections'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
@@ -13,11 +14,13 @@ import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 // The vi.mock factory below replaces the computed (read-only) atom with a
 // writable one; narrow the import back so tests can drive it.
 const scopeProfileMock = $settingsRequestProfile as unknown as { set: (value: string) => void }
+const connectionIdMock = $activeConnectionId as unknown as { set: (value: null | string) => void }
 
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
+const getCommandTtsVoices = vi.fn()
 
 // Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
 // config hook reaches them through the barrel, and a bare mock would throw.
@@ -31,6 +34,7 @@ vi.mock('@/hermes', async () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  getCommandTtsVoices: (provider: string, profile?: string) => getCommandTtsVoices(provider, profile),
   setApiRequestProfile: () => {}
 }))
 
@@ -53,6 +57,11 @@ vi.mock('@/store/settings-scope', () => ({
   $settingsScopeProfile: atom<string>('default')
 }))
 
+vi.mock('@/store/connections', async () => ({
+  ...(await vi.importActual<typeof import('@/store/connections')>('@/store/connections')),
+  $activeConnectionId: atom<null | string>(null)
+}))
+
 vi.mock('@/store/projects', () => ({
   $worktreeRefreshToken: atom(0),
   repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
@@ -71,7 +80,9 @@ beforeAll(async () => {
 
 beforeEach(() => {
   scopeProfileMock.set('default')
+  connectionIdMock.set(null)
   getElevenLabsVoices.mockResolvedValue({ available: false })
+  getCommandTtsVoices.mockResolvedValue({ available: false, provider: '', current: '', voices: [] })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
   saveHermesConfig.mockResolvedValue({ ok: true })
 })
@@ -97,6 +108,204 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('loads command-provider voices for the selected profile', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices',
+            voice: 'en_US-amy-medium'
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+    getCommandTtsVoices.mockResolvedValue({
+      available: true,
+      provider: 'piper-custom',
+      current: 'en_US-amy-medium',
+      voices: [{ id: 'en_US-amy-medium', label: 'en_US-amy-medium' }]
+    })
+
+    renderConfigSettings('voice')
+
+    await vi.waitFor(() =>
+      expect(getCommandTtsVoices).toHaveBeenCalledWith('piper-custom', { connectionId: null, profile: 'default' })
+    )
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"]')).not.toBeNull()
+    )
+  })
+
+  it('keeps the command voice field editable when discovery is unavailable', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices',
+            voice: ''
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+
+    renderConfigSettings('voice')
+
+    await vi.waitFor(() =>
+      expect(getCommandTtsVoices).toHaveBeenCalledWith('piper-custom', { connectionId: null, profile: 'default' })
+    )
+    await vi.waitFor(() => {
+      const field = document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"]')
+      expect(field?.querySelector('[role="combobox"]')).not.toBeNull()
+    })
+  })
+
+  it('shows a manual voice field when a command provider has no discovery command', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voice: 'manual-voice'
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+
+    renderConfigSettings('voice')
+
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"]')).not.toBeNull()
+    )
+    expect(screen.getByDisplayValue('manual-voice')).toBeTruthy()
+    expect(getCommandTtsVoices).not.toHaveBeenCalled()
+  })
+
+  it('keeps empty discovery editable and saves a typed voice id', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices',
+            voice: ''
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+    getCommandTtsVoices.mockResolvedValue({
+      available: true,
+      provider: 'piper-custom',
+      current: '',
+      voices: []
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('voice')
+      await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalled())
+      const input = document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"] [role="combobox"]')
+      expect(input).not.toBeNull()
+      fireEvent.change(input!, { target: { value: 'manual-voice-id' } })
+      await vi.advanceTimersByTimeAsync(700)
+
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+      expect(JSON.stringify(saveHermesConfig.mock.calls)).toContain('manual-voice-id')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the manual voice field available when discovery rejects', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices',
+            voice: ''
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+    getCommandTtsVoices.mockRejectedValueOnce(new Error('voice query failed'))
+
+    renderConfigSettings('voice')
+
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector('[data-tour="field-tts.providers.piper-custom.voice"] [role="combobox"]')
+      ).not.toBeNull()
+    )
+  })
+
+  it('keeps deferred voice requests on the profile and connection that keyed them', async () => {
+    type VoiceResponse = {
+      available: boolean
+      provider: string
+      current: string
+      voices: { id: string; label: string }[]
+    }
+    const pending: Array<(response: VoiceResponse) => void> = []
+
+    scopeProfileMock.set('profile-a')
+    connectionIdMock.set('gateway-a')
+    getHermesConfigRecord.mockResolvedValue({
+      tts: {
+        provider: 'piper-custom',
+        providers: {
+          'piper-custom': {
+            type: 'command',
+            command: 'piper speak',
+            voices_command: 'piper --list-voices',
+            voice: 'current'
+          }
+        }
+      }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'tts.provider': { type: 'select', options: [] } } })
+    getCommandTtsVoices.mockImplementation(
+      () => new Promise(resolve => pending.push(resolve as (response: VoiceResponse) => void))
+    )
+
+    renderConfigSettings('voice')
+
+    await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(1))
+    scopeProfileMock.set('profile-b')
+    connectionIdMock.set('gateway-b')
+
+    await vi.waitFor(() => expect(getCommandTtsVoices).toHaveBeenCalledTimes(2))
+    expect(getCommandTtsVoices.mock.calls[0]).toEqual([
+      'piper-custom',
+      { connectionId: 'gateway-a', profile: 'profile-a' }
+    ])
+    expect(getCommandTtsVoices.mock.calls[1]).toEqual([
+      'piper-custom',
+      { connectionId: 'gateway-b', profile: 'profile-b' }
+    ])
+
+    await act(async () => {
+      pending[0]({ available: true, provider: 'piper-custom', current: 'current', voices: [] })
+      pending[1]({ available: true, provider: 'piper-custom', current: 'current', voices: [] })
+    })
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

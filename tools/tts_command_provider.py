@@ -2,8 +2,8 @@
 
 ``tts.providers.<name>: {type: command, command: "piper -f {output_path} < {input_path}"}``
 (and the ``stt.`` twin): ``{placeholders}`` are shell-quoted for their surrounding quote
-context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-timeout
-process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
+context, ``{{``/``}}`` stay literal. Owns quote-aware rendering, idle and optional wall-clock
+timeouts, and the generic ``<section>.providers.<name>`` readers, re-imported by
 ``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
 ``{speed}``. Built-in provider names always win over a same-named ``providers`` entry.
@@ -11,9 +11,14 @@ process runner and the generic ``<section>.providers.<name>`` readers, re-import
 
 from __future__ import annotations
 
+import codecs
+import io
+import logging
+import math
 import os
 import queue
 import re
+import signal
 import shlex
 import subprocess
 import tempfile
@@ -24,6 +29,8 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
 from utils import is_truthy_value
+
+_log = logging.getLogger(__name__)
 
 
 def shell_quote_context(command_template: str, position: int) -> Optional[str]:
@@ -95,33 +102,135 @@ def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> No
         getattr(proc, method)()
 
 
-def terminate_command_process_tree(proc: subprocess.Popen) -> None:
-    """Best-effort termination of a shell process and all of its children."""
-    if proc.poll() is not None:
-        return
-    if os.name == "nt":
+def _windows_descendants(psutil: Any, root_pid: int) -> list[Any]:
+    """Find descendants by parent pid, even when the root shell has exited."""
+    children_by_parent: dict[int, list[Any]] = {}
+    for child in psutil.process_iter(["pid", "ppid"]):
         try:
-            # CREATE_NO_WINDOW: taskkill is a console-subprocess — the kill itself must not
-            # flash a window on windowless hosts, same class of defect as the spawn above.
-            from hermes_cli._subprocess_compat import windows_hide_flags
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL,
-                           creationflags=windows_hide_flags(), check=False)
-        except Exception:
-            proc.kill()
+            parent_pid = child.info.get("ppid")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if isinstance(parent_pid, int):
+            children_by_parent.setdefault(parent_pid, []).append(child)
+
+    descendants = []
+    pending = [root_pid]
+    seen = {root_pid}
+    while pending:
+        parent_pid = pending.pop()
+        for child in children_by_parent.get(parent_pid, []):
+            if child.pid in seen:
+                continue
+            seen.add(child.pid)
+            descendants.append(child)
+            pending.append(child.pid)
+    return descendants
+
+
+def _terminate_windows_process_tree(proc: subprocess.Popen) -> None:
+    """Ask taskkill to clean up descendants, with a process-table fallback."""
+    taskkill_succeeded = False
+    try:
+        # CREATE_NO_WINDOW: taskkill is a console-subprocess — the kill itself must not
+        # flash a window on windowless hosts, same class of defect as the spawn above.
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+        taskkill_succeeded = result.returncode == 0
+    except Exception as exc:
+        _log.debug("taskkill could not stop command provider tree (%s)", type(exc).__name__)
+
+    if taskkill_succeeded:
         return
+
+    _log.debug("taskkill did not stop command provider tree; trying process-table cleanup")
     try:
         import psutil  # type: ignore
     except ImportError:
         psutil = None
-    # Without psutil only the shell itself is signalled (children may survive).
-    signal = ((lambda m: getattr(proc, m)()) if psutil is None
-              else (lambda m: _signal_process_tree(psutil, proc, m)))
-    signal("terminate")
+
+    if psutil is not None:
+        try:
+            descendants = _windows_descendants(psutil, proc.pid)
+        except Exception as exc:
+            _log.debug("could not inspect command provider descendants (%s)", type(exc).__name__)
+        else:
+            for child in reversed(descendants):
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def terminate_command_process_tree(proc: subprocess.Popen) -> None:
+    """Best-effort termination of a shell process and all of its children."""
+    if os.name == "nt":
+        _terminate_windows_process_tree(proc)
+        return
+
+    group_signalled = False
+    try:
+        # the process group survives the shell leader when a child still holds a pipe open
+        os.killpg(proc.pid, signal.SIGTERM)
+        group_signalled = True
+    except ProcessLookupError:
+        if proc.poll() is None:
+            proc.terminate()
+    except OSError:
+        if proc.poll() is not None:
+            return
+        try:
+            import psutil  # type: ignore
+        except ImportError:
+            proc.terminate()
+        else:
+            _signal_process_tree(psutil, proc, "terminate")
+
     try:
         proc.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        signal("kill")
+        pass
+
+    if group_signalled:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # keep the original timeout error intact when the host blocks group escalation
+            if proc.poll() is None:
+                try:
+                    import psutil  # type: ignore
+                except ImportError:
+                    proc.kill()
+                else:
+                    _signal_process_tree(psutil, proc, "kill")
+    elif proc.poll() is None:
+        try:
+            import psutil  # type: ignore
+        except ImportError:
+            proc.kill()
+        else:
+            _signal_process_tree(psutil, proc, "kill")
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def command_env_passthrough(config: dict[str, Any]) -> list:
@@ -134,6 +243,10 @@ def command_failure_detail(exc: subprocess.CalledProcessError) -> str:
     """``stderr: ...; stdout: ...`` for a failed command provider, or ``no command output``."""
     parts = [f"{stream}: {text.strip()}" for stream, text in (("stderr", exc.stderr), ("stdout", exc.stdout)) if text]
     return "; ".join(parts) or "no command output"
+
+
+class CommandProviderOutputLimitError(RuntimeError):
+    """raised when a command provider exceeds an explicit output capture limit."""
 
 
 def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
@@ -157,11 +270,21 @@ def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
 
 def run_command_provider(
     command: str, timeout: float, env_passthrough: Optional[list] = None,
+    max_output_chars: Optional[int] = None,
+    max_duration_seconds: Optional[float] = None,
 ) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree idle cleanup.
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
     while propagating delegated-child lineage markers."""
+    if max_output_chars is not None and (
+        isinstance(max_output_chars, bool) or not isinstance(max_output_chars, int) or max_output_chars < 1
+    ):
+        raise ValueError("max_output_chars must be a positive integer")
+    if max_duration_seconds is not None and (
+        not math.isfinite(max_duration_seconds) or max_duration_seconds <= 0
+    ):
+        raise ValueError("max_duration_seconds must be positive and finite")
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
@@ -174,8 +297,8 @@ def run_command_provider(
             scrubbed[key] = value
     # Own process group so the whole tree can be signalled on idle timeout; on Windows the
     # shared bundle also hides the console (shell=True spawns via cmd.exe, which otherwise
-    # flashes a window on windowless hosts). Lossy UTF-8 decode: locale-mismatched bytes
-    # must not raise in the reader threads.
+    # flashes a window on windowless hosts). Incremental UTF-8 decoding keeps split
+    # multibyte characters intact and replaces invalid bytes instead of raising.
     group = provider_popen_group_kwargs(os.name)
     proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
@@ -183,16 +306,45 @@ def run_command_provider(
     output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
     chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
     open_streams = {"stdout", "stderr"}
+    output_limit_hit = threading.Event()
+    capture_lock = threading.Lock()
+    captured_chars = 0
+
+    def emit_chunk(name: str, chunk: str) -> None:
+        nonlocal captured_chars
+        if not chunk:
+            return
+        if max_output_chars is not None:
+            with capture_lock:
+                remaining = max_output_chars - captured_chars
+                if remaining <= 0:
+                    output_limit_hit.set()
+                    return
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining]
+                    output_limit_hit.set()
+                captured_chars += len(chunk)
+        output_queue.put((name, chunk))
 
     def read_stream(name: str, stream: Any) -> None:
         encoding = getattr(stream, "encoding", None) or "utf-8"
         read1 = getattr(getattr(stream, "buffer", None), "read1", None)
+        decoder = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder(encoding)(errors="replace"), translate=True
+        )
         try:
             while True:
-                chunk = stream.read(65536) if read1 is None else read1(65536).decode(encoding, errors="replace")
-                if not chunk:
-                    break
-                output_queue.put((name, chunk))
+                if read1 is None:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                else:
+                    raw_chunk = read1(65536)
+                    if not raw_chunk:
+                        emit_chunk(name, decoder.decode(b"", final=True))
+                        break
+                    chunk = decoder.decode(raw_chunk)
+                emit_chunk(name, chunk)
         finally:
             output_queue.put((name, None))
 
@@ -200,10 +352,24 @@ def run_command_provider(
                for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
     for reader in readers:
         reader.start()
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    hard_deadline = started + max_duration_seconds if max_duration_seconds is not None else None
     timed_out = False
+    hard_timeout_reached = False
+    output_limit_reached = False
     while open_streams:
-        remaining = deadline - time.monotonic()
+        if output_limit_hit.is_set():
+            output_limit_reached = True
+            break
+        now = time.monotonic()
+        if hard_deadline is not None and now >= hard_deadline:
+            timed_out = True
+            hard_timeout_reached = True
+            break
+        remaining = deadline - now
+        if hard_deadline is not None:
+            remaining = min(remaining, hard_deadline - now)
         if remaining <= 0:
             timed_out = True
             break
@@ -216,12 +382,17 @@ def run_command_provider(
             continue
         chunks[name].append(chunk)
         deadline = time.monotonic() + timeout
-    if not timed_out:
+    output_limit_reached = output_limit_reached or output_limit_hit.is_set()
+    if not timed_out and not output_limit_reached:
+        wait_timeout = max(0.0, deadline - time.monotonic())
+        if hard_deadline is not None:
+            wait_timeout = min(wait_timeout, max(0.0, hard_deadline - time.monotonic()))
         try:
-            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            proc.wait(timeout=wait_timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-    if timed_out:
+            hard_timeout_reached = hard_deadline is not None and time.monotonic() >= hard_deadline
+    if timed_out or output_limit_reached:
         terminate_command_process_tree(proc)
         for reader in readers:
             reader.join(timeout=0.5)
@@ -230,9 +401,14 @@ def run_command_provider(
             if chunk:
                 chunks[name].append(chunk)
     stdout, stderr = "".join(chunks["stdout"]), "".join(chunks["stderr"])
+    if output_limit_reached:
+        raise CommandProviderOutputLimitError(
+            f"command output exceeded the {max_output_chars}-character capture limit"
+        )
     if timed_out:
-        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from (
-            subprocess.TimeoutExpired(command, timeout))
+        timeout_value = max_duration_seconds if hard_timeout_reached else timeout
+        raise subprocess.TimeoutExpired(command, timeout_value, output=stdout, stderr=stderr) from (
+            subprocess.TimeoutExpired(command, timeout_value))
     if proc.returncode:
         raise subprocess.CalledProcessError(proc.returncode, command, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)

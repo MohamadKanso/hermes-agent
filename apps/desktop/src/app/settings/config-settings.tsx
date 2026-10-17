@@ -36,6 +36,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { CommandTtsVoiceField } from './command-tts-voice-field'
 import { configSubpageForField } from './config-subpages'
 import {
   clearsEnabledToolsets,
@@ -43,6 +44,7 @@ import {
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
+  selectedCommandTtsVoiceProvider,
   sectionFieldEntries,
   setNested,
   voiceFieldVisible
@@ -520,6 +522,9 @@ function ConfigSettingsInner({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
+              {key === 'tts.provider' && selectedCommandTtsVoiceProvider(config) ? (
+                <CommandTtsVoiceField config={config} onChange={updateConfig} profile={scopeProfile} />
+              ) : null}
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel
                   key={String(getNested(config, key))}

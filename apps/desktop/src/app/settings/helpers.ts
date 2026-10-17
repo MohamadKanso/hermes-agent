@@ -70,11 +70,12 @@ function isSafePart(part: string): boolean {
   return part.length > 0 && !POLLUTING_PATH_PARTS.has(part)
 }
 
-function configPathParts(path: string): string[] {
-  const parts = path.split('.')
+function configPathParts(path: string | readonly string[]): string[] {
+  const parts = typeof path === 'string' ? path.split('.') : [...path]
+  const label = typeof path === 'string' ? path : path.join('.')
 
   if (!parts.every(isSafePart)) {
-    throw new Error(`Unsafe config path: ${path}`)
+    throw new Error(`Unsafe config path: ${label}`)
   }
 
   return parts
@@ -93,7 +94,7 @@ function safeSet(target: Record<string, unknown>, key: string, value: unknown): 
   })
 }
 
-export function getNested(obj: HermesConfigRecord, path: string): unknown {
+export function getNested(obj: HermesConfigRecord, path: string | readonly string[]): unknown {
   let cur: unknown = obj
 
   for (const part of configPathParts(path)) {
@@ -230,7 +231,11 @@ export function sectionFieldEntries(
   )
 }
 
-export function setNested(obj: HermesConfigRecord, path: string, value: unknown): HermesConfigRecord {
+export function setNested(
+  obj: HermesConfigRecord,
+  path: string | readonly string[],
+  value: unknown
+): HermesConfigRecord {
   const clone = structuredClone(obj)
   const parts = configPathParts(path)
   let cur: Record<string, unknown> = clone
@@ -375,6 +380,44 @@ function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'
   }
 
   return [...names]
+}
+
+export function selectedCommandTtsVoiceProvider(
+  config: HermesConfigRecord
+): null | { name: string; configPath: readonly string[]; hasVoiceCommand: boolean } {
+  const selected = normalize(asText(getNested(config, 'tts.provider')))
+
+  if (!selected) {
+    return null
+  }
+
+  const name = commandProviderNames(config, 'tts').find(candidate => normalize(candidate) === selected)
+
+  if (!name || name !== selected) {
+    return null
+  }
+
+  const tts = getNested(config, 'tts')
+
+  if (!isPlainObject(tts)) {
+    return null
+  }
+
+  const providers = isPlainObject(tts.providers) ? tts.providers : {}
+  const nested = providers[name]
+  const legacy = tts[name]
+  const configPath = isPlainObject(nested) ? ['tts', 'providers', name] : ['tts', name]
+  const providerConfig = isPlainObject(nested) ? nested : legacy
+
+  if (!isPlainObject(providerConfig)) {
+    return null
+  }
+
+  return {
+    name,
+    configPath,
+    hasVoiceCommand: typeof providerConfig.voices_command === 'string' && providerConfig.voices_command.trim() !== ''
+  }
 }
 
 // Voice sets per OpenAI speech model, per the OpenAI TTS API docs: tts-1 and

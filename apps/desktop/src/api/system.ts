@@ -6,6 +6,7 @@ import type {
   AudioTranscriptionResponse,
   AudioTtsLeaseResponse,
   BackendUpdateCheckResponse,
+  CommandTtsVoicesResponse,
   CuratorStatusResponse,
   DebugShareResponse,
   ElevenLabsVoicesResponse,
@@ -264,6 +265,12 @@ export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabs
   return hermesApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
     ...profileScoped(profile)
+  })
+}
+
+export function getCommandTtsVoices(provider: string, owner: ResolvedOwner): Promise<CommandTtsVoicesResponse> {
+  return hermesApiAs<CommandTtsVoicesResponse>(owner, {
+    path: `/api/audio/tts/voices?provider=${encodeURIComponent(provider)}`
   })
 }
 

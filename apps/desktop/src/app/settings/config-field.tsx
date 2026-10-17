@@ -37,7 +37,9 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
+  descriptionExtra,
+  labelOverride,
+  allowCustomOptions = false
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -46,11 +48,14 @@ export function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
+  labelOverride?: string
+  allowCustomOptions?: boolean
 }) {
   const { t } = useI18n()
   const c = t.settings.config
 
   const label =
+    labelOverride ??
     fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
     fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
     prettyName(schemaKey.split('.').pop() ?? schemaKey)
@@ -148,7 +153,7 @@ export function ConfigField({
   // options are dropdown suggestions instead of a closed Select gate. The old
   // native <datalist> filtered by the current value, so a field already set
   // to a valid option showed only that single suggestion.
-  if (selectOptions && FREE_INPUT_KEYS.has(schemaKey)) {
+  if (selectOptions && (FREE_INPUT_KEYS.has(schemaKey) || allowCustomOptions)) {
     return row(
       <ComboboxInput
         className={CONTROL_TEXT}

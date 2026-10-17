@@ -1751,6 +1751,11 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+#   providers:
+#     my-custom-tts:
+#       type: "command"
+#       command: "my-tts speak --input {input_path} --output {output_path}"
+#       voices_command: "my-tts list-voices"  # optional; one voice id per line
 
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
 # Full engine/provider options inherit from DEFAULT_CONFIG in
