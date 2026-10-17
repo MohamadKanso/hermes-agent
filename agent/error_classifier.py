@@ -527,7 +527,7 @@ _REASONING_PARAM_REJECTION = re.compile(
 
 
 _REASONING_REQUIRED_MARKERS = (
-    "mandatory", "cannot be disabled", "can't be disabled", "must be enabled", "is required",
+    "mandatory", "cannot be disabled", "can't be disabled", "can’t be disabled", "must be enabled", "is required",
     "always enabled", "cannot be turned off",
 )
 
