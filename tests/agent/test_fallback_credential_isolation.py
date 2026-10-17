@@ -157,6 +157,82 @@ class TestFallbackCredentialIsolation:
         assert resolve.call_count == 1 and resolve.call_args.args[0] == "openrouter"
         assert agent.provider == "openrouter" and agent._credential_pool is throttled
 
+    def test_same_provider_fallback_not_skipped_when_pool_has_no_wait_info(self):
+        """#140568: same-provider fallback candidates must not be skipped when
+        next_available_at() returns none because credentials (like vertex service-account
+        key files) carry no wait info. only a fully dead pool is skipped."""
+        from agent.chat_completion_helpers import try_activate_fallback
+
+        agent = _make_agent(provider="vertex", model="google/gemini-3.8-flash", base_url="https://vertex.example.com", api_mode="chat_completions")
+        agent._fallback_chain = [{"provider": "vertex", "model": "google/gemini-4-argon"}]
+        pool = _make_pool("vertex")
+        pool.has_available.return_value = False
+        pool.next_available_at.return_value = None
+        # entry is alive (e.g. sa key file auth), not dead
+        alive_entry = SimpleNamespace(last_status=None)
+        pool.entries.return_value = [alive_entry]
+        agent._credential_pool = pool
+        agent._buffer_status = MagicMock()
+        agent._is_azure_openai_url.return_value = False
+        agent._is_direct_openai_url.return_value = False
+        agent._provider_model_requires_responses_api.return_value = False
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded = MagicMock()
+        agent._replace_primary_openai_client = MagicMock()
+        agent.context_compressor = None
+
+        client = SimpleNamespace(api_key="k", base_url="https://vertex.example.com", _custom_headers={})
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, "google/gemini-4-argon")) as resolve, \
+                patch("agent.credential_pool.load_pool", return_value=pool):
+            assert try_activate_fallback(agent) is True
+
+        assert resolve.call_count == 1
+        assert agent.provider == "vertex" and agent.model == "google/gemini-4-argon"
+
+    def test_candidate_pool_exhausted_skips_when_all_entries_are_dead(self):
+        """#140568: when next_available_at() is none and every entry in the pool is
+        marked dead, the candidate pool really is exhausted and should be skipped."""
+        from agent.chat_completion_helpers import _candidate_pool_exhausted
+        from agent.credential_pool import STATUS_DEAD
+
+        pool = _make_pool("custom-provider")
+        pool.has_available.return_value = False
+        pool.next_available_at.return_value = None
+        dead_entry1 = SimpleNamespace(last_status=STATUS_DEAD)
+        dead_entry2 = SimpleNamespace(last_status=STATUS_DEAD)
+        pool.entries.return_value = [dead_entry1, dead_entry2]
+
+        agent = SimpleNamespace(_credential_pool=pool)
+        assert _candidate_pool_exhausted(agent, "custom-provider", "model-x") is True
+
+        # if at least one entry is not dead, pool is not considered exhausted
+        dead_entry2.last_status = None
+        assert _candidate_pool_exhausted(agent, "custom-provider", "model-x") is False
+
+    def test_vertex_sa_credential_pool_repro_140568(self):
+        """#140568: real credentialpool with vertex sa key file entry has
+        has_credentials()=true, has_available()=false, next_available_at()=none.
+        _candidate_pool_exhausted must return false so same-provider fallbacks are not skipped."""
+        from agent.chat_completion_helpers import _candidate_pool_exhausted
+        from agent.credential_pool import AUTH_TYPE_API_KEY, CredentialPool, PooledCredential
+
+        entry = PooledCredential.from_dict("vertex", {
+            "id": "vertex-sa-1",
+            "auth_type": AUTH_TYPE_API_KEY,
+            "label": "VERTEX_SA_KEY_FILE",
+            "access_token": "",
+            "last_status": None,
+        })
+        pool = CredentialPool(provider="vertex", entries=[entry])
+
+        assert pool.has_credentials() is True
+        assert pool.has_available(model="google/gemini-4-argon") is False
+        assert pool.next_available_at(model="google/gemini-4-argon") is None
+
+        agent = SimpleNamespace(_credential_pool=pool)
+        assert _candidate_pool_exhausted(agent, "vertex", "google/gemini-4-argon") is False
+
 # ── Test: _recover_with_credential_pool rejects mismatched pool ──────
 
 # ── Test: base_url not overwritten after fallback ────────────────────

@@ -1938,7 +1938,15 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
         return False
     until = pool.next_available_at(model=fb_model)
-    return until is None or until - time.time() > 600
+    if until is None:
+        # none means no wait information (see next_available_at), not exhausted. entries the
+        # availability scan does not count (e.g. a vertex service-account file with no runtime api
+        # key) would otherwise skip every same-provider fallback (#140568). only a fully dead pool is skipped.
+        from agent.credential_pool import STATUS_DEAD
+        entries_fn = getattr(pool, "entries", None)
+        entries = list(entries_fn()) if callable(entries_fn) else list(getattr(pool, "_entries", []))
+        return bool(entries) and all(getattr(entry, "last_status", None) == STATUS_DEAD for entry in entries)
+    return until - time.time() > 600
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
