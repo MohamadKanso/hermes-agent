@@ -111,13 +111,24 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         assert pid in exclude_pids
         return []
 
-    with patch(
+    # ``restart_managed`` first probes for a managed hermes-dashboard unit; unstubbed, that
+    # probe found the developer's real unit and restarted it.
+    calls: list[list[str]] = []
+
+    def fake_run(args, *a, **kw):
+        calls.append(list(args))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run), patch(
         "hermes_cli.main_dashboard._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=True)
 
     assert result == {"matched": [], "killed": [], "failed": []}
+    assert all(call[:1] == ["systemctl"] and "list-unit-files" in call for call in calls)
+    # Windows has no systemd: the managed-unit probe returns before running anything.
+    assert bool(calls) == (sys.platform != "win32")
 
 
 def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
@@ -144,7 +155,7 @@ class TestFindStaleDashboardPids:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-table scan")
     def test_process_scan_uses_exact_hermes_entrypoints(self, monkeypatch):
-        import hermes_cli.process_identity as process_identity
+        from hermes_cli import process_identity
 
         rows = [
             (12341, "herdr --session hermes server"),
@@ -155,16 +166,16 @@ class TestFindStaleDashboardPids:
             (12346, "python -m hermes_cli.main dashboard --port 9119"),
         ]
         monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: rows)
-        monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
-        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(process_identity, "ledger_entries", list)
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", list)
         monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
 
         assert _find_stale_dashboard_pids() == [12344, 12345, 12346]
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-table scan")
     def test_process_scan_recovers_argv_boundaries_for_paths_with_spaces(self, monkeypatch):
-        import hermes_cli.process_identity as process_identity
-        import hermes_cli.update_cmd_windows as update_cmd_windows
+        from hermes_cli import process_identity
+        from hermes_cli import update_cmd_windows
 
         pid = 12347
         argv = ["/Applications/Hermes Agent/venv/bin/python3", "-m", "hermes_cli.main", "serve"]
@@ -175,8 +186,8 @@ class TestFindStaleDashboardPids:
 
         monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: fake_psutil)
         monkeypatch.setattr(dashboard_procs.subprocess, "run", _ps_runner(_ps_line(pid, flattened)))
-        monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
-        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(process_identity, "ledger_entries", list)
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", list)
         monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda *_: False)
 
         assert _find_stale_dashboard_pids() == [pid]

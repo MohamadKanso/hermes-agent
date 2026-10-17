@@ -69,7 +69,7 @@ def test_list_venv_holders_preserves_paths_with_spaces(monkeypatch, capsys, _qui
 
 
 def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, capsys, _quiet_preflight):
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", list)
 
     def _boom(*_a, **_k):  # the mutating update body must never run behind the read-only flag
         raise AssertionError("update body ran")

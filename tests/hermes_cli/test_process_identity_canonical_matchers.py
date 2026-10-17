@@ -234,7 +234,7 @@ def test_desktop_ownership_survives_the_composed_matchers(monkeypatch):
     import hermes_cli.process_identity as pid_mod
     import hermes_cli.update_cmd_windows as win
 
-    monkeypatch.setattr(pid_mod, "ledger_entries", lambda: [])  # force the holder-scan rung
+    monkeypatch.setattr(pid_mod, "ledger_entries", list)  # force the holder-scan rung
 
     class _FakePsutil:
         class Process:
@@ -269,12 +269,12 @@ BACKENDS = [
 
 
 def test_dashboard_scan_selects_entrypoint_plus_subcommand_tokens_never_substrings(monkeypatch):
-    import hermes_cli.dashboard_procs as dashboard_procs
-    import hermes_cli.process_identity as process_identity
+    from hermes_cli import dashboard_procs
+    from hermes_cli import process_identity
 
     monkeypatch.setattr(dashboard_procs, "_iter_process_table",
                         lambda: [(4242, DECOY), *((5000 + i, cmd) for i, cmd in enumerate(BACKENDS))])
-    monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+    monkeypatch.setattr(process_identity, "ledger_entries", list)
     assert dashboard_procs._scan_dashboard_processes() == [(5000, BACKENDS[0]), (5001, BACKENDS[1])]
 
 
