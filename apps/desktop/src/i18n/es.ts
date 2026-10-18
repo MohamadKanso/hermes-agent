@@ -3,48 +3,25 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esClarify } from './es_clarify'
+import { esConnectorAccounts } from './es_connector_accounts'
+import { esConnectorCard } from './es_connector_card'
+import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
+import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
+import { esThemePicker } from './es_theme_picker'
+import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
   sharedMetrics: esSharedMetrics,
+  firstRun: esFirstRun,
   intro: introEs,
-  connectors: {
-    title: 'Conecta tus apps',
-    connect: 'Conectar',
-    skip: 'Ahora no',
-    cancel: 'Dejar de esperar',
-    retry: 'Reintentar',
-    grant: 'Volver a conectar',
-    connected: 'Conectado',
-    checking: 'Comprobando tus apps…',
-    notConnected: 'No conectado',
-    skipped: 'Omitido',
-    disabled: 'No disponible',
-    failed: 'No se pudo conectar',
-    needsAuth: 'Acceso caducado',
-    opening: 'Abriendo el inicio de sesión…',
-    waiting: 'Esperando a tu navegador…',
-    timeout: 'Seguimos esperando la autorización.',
-    refresh: 'Actualizar estado',
-    connectError: 'No se pudo iniciar la autorización. Inténtalo de nuevo.',
-    connectErrorFor: (app: string) => `No se pudo iniciar la autorización para ${app}.`,
-    unavailable: 'Los conectores no están disponibles en esta sesión.',
-    ownerMissing: 'Vuelve a abrir esta conversación para gestionar sus conexiones.',
-    search: 'Buscar una app',
-    empty: 'No hay apps que coincidan',
-    disclaimer: 'Conectar es opcional. Autoriza solo las apps que quieras que use Hermes.',
-    execution: 'Herramientas de conectores',
-    setup: server => `Configurar ${server}`,
-    openInBrowser: 'Abrir en el navegador',
-    setupCancel: 'Cancelar',
-    authorizedToolsUnavailable: 'Autorizado. Herramientas no disponibles.',
-    required: 'Obligatorio'
-  },
+  connectors: esConnectorCard,
   connectorsPage: {
     title: 'Conectores',
     searchPlaceholder: (count: number) => `Buscar entre ${count} apps`,
@@ -201,6 +178,9 @@ export const esOverrides = {
       advanced: 'Avanzado',
       advancedHint: 'la entrada de mcp.json y los registros'
     },
+
+    accounts: esConnectorAccounts,
+
     tools: {
       title: 'Herramientas',
       notInstalledBody: 'Instálalo en este dispositivo para ver las herramientas que incluye.',
@@ -815,11 +795,6 @@ export const esOverrides = {
         profileLabel: 'Instalar para el perfil',
         agentTargetLocal: (profile, dir) => `Se instala en el backend ${profile} (${dir})`,
         agentTargetRemote: profile => `Se instala en el backend ${profile} conectado`,
-        catalogPinned: (name, sha) =>
-          `Entrada del catálogo de Hermes “${name}”: el componente del agente se instala en la versión fijada revisada${sha ? ` ${sha}` : ''}, no en la punta de la rama.`,
-        reviewedHeading: 'Entrada del catálogo revisada',
-        reviewedIntro:
-          'Una persona revisó esta entrada en su commit fijado. Aun así, puedes inspeccionar el código exacto abajo.',
         toolsConnected: n => (n === 1 ? '1 herramienta conectada' : `${n} herramientas conectadas`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} lista` : `${names.length} skills listas`),
         nextChat: 'más herramientas disponibles en tu próximo chat',
@@ -832,13 +807,11 @@ export const esOverrides = {
         desktopOnlyNote: 'Los paquetes solo de escritorio no instalan un plugin del agente en el backend.',
         insecureWarning:
           'Esta URL usa un esquema inseguro o local. Para instalaciones de producción, usa https:// o git@.',
-        securityHeading: 'Antes de instalar',
         securityIntro:
           'Instala solo desde fuentes de confianza; revisa el repositorio de abajo si quieres ver qué se añadirá.',
         sourceHeading: 'Código fuente',
         viewRepository: 'Ver repositorio',
         viewPluginFiles: 'Ver archivos del plugin',
-        gitCloneLabel: 'URL de git clone',
         enableAgent: 'Activar el plugin del agente tras instalarlo',
         forceReinstall: 'Forzar reinstalación (reemplazar si ya está instalado)',
         pinToCommit: 'Fijar a un commit (opcional)',
@@ -859,7 +832,17 @@ export const esOverrides = {
           'Hermes dejó de esperar el resultado de la instalación, pero es posible que el plugin siga instalándose. Cierra este cuadro y actualiza la lista de plugins antes de volver a instalarlo.',
         desktopFailed: 'Error al instalar el plugin de escritorio',
         missingEnv: (name, vars) =>
-          `${name} está instalado, pero necesita una clave para funcionar: ${vars}. Añádela ahora o las herramientas del plugin fallarán.`
+          `${name} está instalado, pero necesita una clave para funcionar: ${vars}. Añádela ahora o las herramientas del plugin fallarán.`,
+        verified: 'Verificado',
+        unverified: 'Sin verificar',
+        reviewedByNous: 'Revisado por Nous.',
+        installsAndEnables: profile => `Se instala para ${profile} y se activa al momento.`,
+        installsOnly: profile => `Se instala para ${profile}.`,
+        advanced: 'Avanzado',
+        versionLabel: 'Versión',
+        reviewedPin: sha => (sha ? `Pin revisado ${sha}` : 'Pin revisado'),
+        latestCommit: 'Último commit',
+        nothingToInstall: 'Este paquete no tiene nada que instalar aquí.'
       }
     },
     vault: {
@@ -1233,9 +1216,7 @@ export const esOverrides = {
         maxLines: 'Límite de páginas de archivo',
         maxLineLength: 'Límite de longitud de línea'
       },
-      codeExecution: {
-        mode: 'Modo de ejecución de código'
-      },
+      codeExecution: { mode: 'Modo de ejecución de código' },
       approvals: {
         mode: 'Modo de aprobación',
         timeout: 'Tiempo límite de aprobación',
@@ -1508,12 +1489,6 @@ export const esOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Backends de bots en caliente',
-      warmBotBackendsTitle: 'Backends de bots en caliente',
-      backendIdleTimeoutAria: 'Tiempo de inactividad del backend en milisegundos',
-      backendIdleTimeoutTitle: 'Tiempo de inactividad del backend'
-    },
     customEndpoints: {
       active: 'Activo',
       apiKeySet: 'Clave API configurada',
@@ -1560,9 +1535,7 @@ export const esOverrides = {
       screenRecording: 'Grabación de pantalla',
       driverHealth: 'Estado del controlador'
     },
-    about: {
-      updates: 'Actualizaciones'
-    },
+    about: { updates: 'Actualizaciones', channel: esUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Minimizar a la bandeja',
       minimizeToTrayDesc:
@@ -2608,8 +2581,6 @@ export const esOverrides = {
       pinnedProvenance: (sha: string) =>
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
-      tierOfficial: 'oficial',
-      tierCommunity: 'comunidad',
       updateToPin: (sha: string) => `Actualizar a ${sha}`,
       updateFailed: (name: string) => `No se pudo actualizar ${name}`,
       updated: (name: string) =>
@@ -3540,6 +3511,7 @@ export const esOverrides = {
     next: 'Siguiente:',
     overdueSince: 'Atrasada desde:',
     noRuns: 'Sin ejecuciones aún',
+    queuedRun: 'Ejecución en cola',
     manage: 'Gestionar',
     showRuns: 'Mostrar ejecuciones',
     hideRuns: 'Ocultar ejecuciones',
@@ -3846,6 +3818,7 @@ export const esOverrides = {
     openDirective: 'Abrir',
     queueMessage: 'Poner mensaje en cola',
     steer: 'Guiar la ejecución actual',
+    redirect: 'Redirigir la ejecución actual',
     stop: 'Detener',
     send: 'Enviar',
     speaking: 'Hablando',
@@ -3995,6 +3968,12 @@ export const esOverrides = {
     queueDelete: 'Borrar',
     queueResume: 'Reanudar',
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
+    queueLostNote: 'Turno perdido durante el reinicio',
+    restoreImageDraft: 'Restaurar borrador con imagen',
+    queueCancelFailed: 'No se pudo quitar el turno en cola',
+    queueLostDiscard: 'Descartar',
+    queueLostDiscardTip:
+      'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
     queueDroppedTitle: 'Entrada en cola descartada',
@@ -4167,7 +4146,7 @@ export const esOverrides = {
       heartbeatEveryHours: (hours: number) => `cada ${hours} h`,
       heartbeatEverySeconds: (seconds: number) => `cada ${seconds} s`,
       heartbeatNext: (time: string) => `próximo ${time}`,
-      heartbeatDueWaitingForIdle: 'pendiente: esperando inactividad',
+      dueWaitingForIdle: 'pendiente: esperando inactividad',
       heartbeatActions: 'Acciones del heartbeat',
       pauseHeartbeat: 'Pausar heartbeat',
       resumeHeartbeat: 'Reanudar heartbeat',
@@ -4399,20 +4378,6 @@ export const esOverrides = {
         'El backend no volvió a estar disponible. Puede que la actualización no se haya completado; revisa el host del backend.'
     }
   },
-  handoffTour: {
-    profileTitle: 'Tu primera tarea se ejecuta en el perfil predeterminado',
-    profileText:
-      'Esta barra cambia de perfil. El que está iluminado ahora es el predeterminado, donde está la sesión de la tarea. El otro es el perfil de configuración, donde está el chat de bienvenida.',
-    sessionsTitle: 'Cada perfil tiene sus propias sesiones',
-    sessionsText:
-      'Esta lista pertenece al perfil predeterminado. Nueva sesión crea una en el perfil que esté seleccionado. Cambia de perfil en la barra y la lista cambia con él.',
-    stayTitle: 'Hermes está a un clic',
-    stayText: 'Cambia al perfil de configuración y abre Bienvenida a Hermes siempre que necesites ayuda. Se queda ahí.'
-  },
-  guidedGreeting: {
-    line: 'Hola, pasa. Soy Hermes. Dame dos minutos para prepararlo todo a tu medida y luego me pondremos a trabajar en algo que de verdad quieras hacer.\n\nPero antes, ¿cómo quieres que te llame?',
-    nameSuggestion: (name: string) => `(También puedo llamarte simplemente ${name}, si lo prefieres.)`
-  },
   install: {
     stageStates: {
       pending: 'Pendiente',
@@ -4490,103 +4455,7 @@ export const esOverrides = {
     reloadRetry: 'Recargar y reintentar',
     openLogs: 'Abrir registros'
   },
-  onboarding: {
-    headerTitle: 'Vamos a configurar Hermes Agent',
-    headerDesc: 'Conecta un proveedor de modelo para empezar a chatear. La mayoría de opciones requieren un clic.',
-    preparingInstall: 'Hermes está terminando la instalación. En el primer inicio suele tardar menos de un minuto.',
-    starting: 'Iniciando Hermes…',
-    lookingUpProviders: 'Buscando proveedores...',
-    collapse: 'Contraer',
-    otherProviders: 'Otros proveedores',
-    haveApiKey: 'Tengo una clave API',
-    chooseLater: 'Elegiré un proveedor más tarde',
-    recommended: 'Recomendado',
-    connected: 'Conectado',
-    featuredPitch: 'Una suscripción, más de 300 modelos frontier: la forma recomendada de usar Hermes',
-    fireworksPitch: 'API directa de modelos: modelos frontier alojados en Fireworks',
-    localModelsTitle: 'Ejecutar modelos localmente',
-    localModelsPitch: 'Sin cuenta: descarga un modelo y ejecútalo en este equipo',
-    openRouterPitch: 'Una clave, cientos de modelos: un buen valor predeterminado',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'API de modelo directo',
-        description: 'Acceso directo a modelos alojados en Fireworks AI.'
-      },
-      openrouter: {
-        short: 'una clave, muchos modelos',
-        description:
-          'Aloja cientos de modelos detrás de una sola clave. Buen valor predeterminado para instalaciones nuevas.'
-      },
-      openai: {
-        short: 'modelos tipo GPT',
-        description: 'Acceso directo a modelos de OpenAI.'
-      },
-      gemini: {
-        short: 'modelos Gemini',
-        description: 'Acceso directo a modelos de Google Gemini.'
-      },
-      xai: {
-        short: 'modelos Grok',
-        description: 'Acceso directo a modelos Grok de xAI.'
-      },
-      local: {
-        short: 'autohospedado',
-        description:
-          'Apunta Hermes a un endpoint local o autohospedado compatible con OpenAI (vLLM, llama.cpp, Ollama, etc.).'
-      }
-    },
-    backToSignIn: 'Volver al inicio de sesión',
-    getKey: 'Obtener una clave',
-    replaceCurrent: 'Reemplazar valor actual',
-    pasteApiKey: 'Pegar clave API',
-    localApiKeyPlaceholder: 'Clave API (opcional; solo si tu endpoint la requiere)',
-    localModelNamePlaceholder: 'Nombre del modelo (p. ej. command-a-plus-05-2026)',
-    couldNotSave: 'No se pudo guardar la credencial.',
-    connecting: 'Conectando',
-    update: 'Actualizar',
-    flowSubtitles: {
-      pkce: 'Abre tu navegador para iniciar sesión y luego continúa aquí',
-      device_code: 'Abre una página de verificación en tu navegador; Hermes se conecta automáticamente',
-      external: 'Inicia sesión una vez en tu terminal y vuelve para chatear'
-    },
-    startingSignIn: provider => `Iniciando sesión con ${provider}...`,
-    verifyingCode: provider => `Verificando tu código con ${provider}...`,
-    connectedProvider: provider => `${provider} conectado`,
-    connectedPicking: provider => `${provider} conectado. Eligiendo un modelo predeterminado...`,
-    signInFailed: 'No se pudo iniciar sesión. Inténtalo de nuevo.',
-    signInExpired:
-      'La página de inicio de sesión caducó antes de que terminaras. Vuelve a intentarlo y completa el paso del navegador en unos minutos, o usa una clave API.',
-    signInDidNotFinish: (provider: string) =>
-      `No se completó el inicio de sesión con ${provider}. Comprueba tu conexión a internet y vuelve a intentarlo, o elige otro proveedor.`,
-    tryAgain: 'Reintentar',
-    useApiKeyInstead: 'Usar una clave API',
-    errorDetails: 'Detalles',
-    pickDifferentProvider: 'Elegir otro proveedor',
-    signInWith: provider => `Iniciar sesión con ${provider}`,
-    openedBrowser: provider => `Abrimos ${provider} en tu navegador.`,
-    authorizeThere: 'Autoriza Hermes allí.',
-    copyAuthCode: 'Copia el código de autorización y pégalo abajo.',
-    pasteAuthCode: 'Pegar código de autorización',
-    reopenAuthPage: 'Volver a abrir página de autorización',
-    autoBrowser: provider =>
-      `Abrimos ${provider} en tu navegador. Autoriza Hermes allí y te conectarás automáticamente; no hay nada que copiar o pegar.`,
-    reopenSignInPage: 'Volver a abrir página de inicio de sesión',
-    waitingAuthorize: 'Esperando tu autorización...',
-    externalPending: provider =>
-      `${provider} inicia sesión con su propia CLI. Ejecuta este comando en una terminal y luego vuelve y elige "Ya inicié sesión":`,
-    signedIn: 'Ya inicié sesión',
-    deviceCodeOpened: provider => `Abrimos ${provider} en tu navegador. Introduce este código allí:`,
-    reopenVerification: 'Volver a abrir página de verificación',
-    copy: 'Copiar',
-    defaultModel: 'Modelo predeterminado',
-    freeTier: 'Nivel gratis',
-    pro: 'Pro',
-    free: 'Gratis',
-    price: (input, output) => `${input} entrada / ${output} salida por Mtok`,
-    change: 'Cambiar',
-    startChatting: 'Empezar',
-    docs: provider => `Docs de ${provider}`
-  },
+  onboarding: esOnboarding,
   freeTier: {
     providerRowTitle: 'Nous · plan gratuito',
     providerRowPitch: 'Inicia sesión con una cuenta de Nous para desbloquear más modelos y herramientas.',
@@ -4635,6 +4504,12 @@ export const esOverrides = {
       'Hermes no pudo llegar al servicio de Nous para terminar de iniciar tu sesión. Comprueba tu conexión a internet y vuelve a intentarlo. Tu sesión sigue aquí.',
     alreadySignedInHeading: 'Ya has iniciado sesión.',
     alreadySignedInBody: 'Este Hermes ya tiene la sesión iniciada en una cuenta de Nous.',
+    offer: {
+      heading: 'Sigue adelante con Hermes',
+      body: 'Estás usando el uso gratuito. Si sigues usando Hermes, empezarás a encontrarte con límites. Inicia sesión con una cuenta gratuita de Nous para tener un uso mayor.',
+      signIn: 'Iniciar sesión',
+      notNow: 'Ahora no'
+    },
     setupFailed: {
       gateClosed:
         'Esta versión de Hermes no puede iniciarse sin una cuenta de Nous. Inicia sesión o crea una: es gratis y solo lleva un minuto.',
@@ -5361,23 +5236,8 @@ export const esOverrides = {
         `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
       alwaysAllow: 'Permitir siempre'
     },
-    clarify: {
-      notReady: 'La solicitud de aclaración aún no está lista',
-      gatewayDisconnected: 'Hermes está sin conexión ahora mismo. Reconéctate y vuelve a enviarlo.',
-      sendFailed: 'No se pudo enviar la respuesta de aclaración',
-      loadingQuestion: 'Cargando pregunta…',
-      other: 'Otro (escribe tu respuesta)',
-      placeholder: 'Escribe tu respuesta…',
-      skip: 'Omitir',
-      skipped: 'Omitido',
-      noAnswer: 'Sin respuesta',
-      confirmAndContinueLabel: 'Confirmar y continuar',
-      singleSelectHint: 'Elige una',
-      multiSelectHint: 'Elige todas las que correspondan',
-      questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
-      notDelivered:
-        'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
-    },
+    clarify: esClarify,
+    themePicker: esThemePicker,
     catalogInstall: {
       preparing: 'Preparando la instalación…',
       install: 'Instalar',
@@ -5394,10 +5254,7 @@ export const esOverrides = {
         plugin: 'plugin',
         skill: 'skill'
       },
-      tier: {
-        official: 'oficial',
-        community: 'comunidad'
-      },
+      tier: { official: 'oficial', verified: 'verificado', community: 'comunidad' },
       targetProfile: (profile: string) => `Se instala en tu perfil ${profile}`,
       sendFailed: 'No se pudo enviar tu respuesta. Vuelve a intentarlo.',
       commitLabel: 'Commit',
@@ -5785,11 +5642,6 @@ export const esOverrides = {
         title: 'Hay una actualización del motor local',
         text: 'Actualiza el motor que ejecuta tus modelos locales. Las solicitudes locales activas pueden interrumpirse.',
         action: 'Actualizar ahora'
-      },
-      'local-setup': {
-        title: 'Este equipo puede ejecutar modelos localmente',
-        text: 'Tu hardware puede servir un modelo local. Los chats se quedan en tu equipo y no cuestan nada.',
-        action: 'Configurarlo'
       },
       'right-pane': {
         title: 'El panel de trabajo',
