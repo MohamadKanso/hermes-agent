@@ -11,6 +11,22 @@ import sqlite3
 import sys
 import threading
 
+
+def _worktree_parent_root() -> set[Path]:
+    # git worktrees share the parent checkout's .git objects
+    dot_git = Path(__file__).resolve().parent.parent / ".git"
+    if not dot_git.is_file():
+        return set()
+    try:
+        content = dot_git.read_text(encoding="utf-8-sig")
+        if content.startswith("gitdir:"):
+            target = Path(content.split(":", 1)[1].strip()).resolve()
+            return {target.parent.parent}
+    except OSError:
+        pass
+    return set()
+
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -22,9 +38,9 @@ _INTERPRETER_PREFIXES = tuple({
     # The default install checks the repo out INSIDE the home (install.sh:
     # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the
     # checkout's own .venv is not Hermes state; without this every run from a default install
-    # trips on its first traceback.
+    # trips on its first traceback. git worktrees share the parent checkout's .git objects.
     Path(__file__).resolve().parent.parent,
-})
+} | _worktree_parent_root())
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
 # resolve once at import, as before: they are fixed for the process lifetime.

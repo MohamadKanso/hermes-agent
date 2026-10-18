@@ -7,6 +7,7 @@ names the pre-update snapshot that predates the cutover.
 import sqlite3
 import subprocess
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,7 +31,12 @@ def repo(tmp_path):
     (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id TEXT)'\n")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "release before the cutover")
+    _git(root, "checkout", "-b", "maintenance")
+    (root / "notes.txt").write_text("maintenance fix\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "side maintenance release")
     _git(root, "tag", "old-release")
+    _git(root, "checkout", "main")
     (root / "hermes_state_common.py").write_text(
         "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'''\n")
     _git(root, "commit", "-am", "gateway runtime")
@@ -95,3 +101,77 @@ def test_forward_updates_and_stores_without_ledger_rows_are_never_refused(repo, 
     assert guard.downgrade_refusal(["git"], repo, head, home=ledgered) is None
     _git(repo, "checkout", "-q", "--detach", old)  # running the old release: the newer target is forward
     assert guard.downgrade_refusal(["git"], repo, head, home=ledgered) is None
+
+
+def test_forward_only_waits_for_next_release_when_target_predates_runtime(repo, tmp_path, monkeypatch):
+    """an unchosen default subscription only moves forward; a target that predates the runtime leaves head intact."""
+    from hermes_cli import source_releases
+    from hermes_cli.source_releases import SourceTarget
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _ledgered_store(home)
+    old = _git(repo, "rev-parse", "old-release")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    # when commit is resolved with forward_only it detects the pre-runtime release and keeps head ahead
+    monkeypatch.setattr(source_releases, "_resolve_source_target",
+                        lambda *a, **k: SourceTarget("stable", "stable", "NousResearch/hermes-agent", commit=old, version="0.22.2"))
+    target = source_releases.resolve_source_target("stable", ["git"], repo, forward_only=True)
+    assert target.ahead is True
+    assert target.commit == head
+    assert "this checkout is newer and waits for the next release" in target.label
+
+    # an explicit downgrade without forward_only keeps the old commit so the guard refuses it
+    explicit = source_releases.resolve_source_target("stable", ["git"], repo, forward_only=False)
+    assert explicit.ahead is False
+    assert explicit.commit == old
+
+
+def test_post_fetch_pre_runtime_release_marks_target_as_head_under_forward_only(repo, tmp_path, monkeypatch, capsys):
+    """a fetched pre-runtime release retargets to head and finishes cleanly as up to date under forward_only."""
+    from hermes_cli import main, update_cmd
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _ledgered_store(home)
+    old = _git(repo, "rev-parse", "old-release")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    # configure mock options and dependencies
+    opts = update_cmd._UpdateOptions(
+        pre_update_version=None, gw_input_fn=None,
+        assume_yes=True, keep_stash=False, switch_branch=False, discard_local_changes=False,
+    )
+    monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_: opts)
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
+    monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
+    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: None)
+    monkeypatch.setattr(main, "PROJECT_ROOT", repo)
+    monkeypatch.setattr(main, "_resolve_update_branch", lambda *_: "main")
+
+    # simulate select_apply_target returning the newly fetched release target before local ancestry is known
+    monkeypatch.setattr(
+        update_cmd._check, "select_apply_target",
+        lambda *a, **k: (old, old, False, "NousResearch/hermes-agent"),
+    )
+    def fake_source_completion_request(*a, **k):
+        return {
+            "home": str(home),
+            "forward_only": True,
+            "release_version": "0.22.2",
+            "release_channel": "stable",
+            "expected_sha": old,
+        }
+    monkeypatch.setattr(update_cmd, "_source_completion_request", fake_source_completion_request)
+    monkeypatch.setattr("hermes_cli.gitlock.fetch_with_partial_clone_recovery",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0))
+
+    args = SimpleNamespace(branch=None, channel=None, yes=True, force=False)
+    update_cmd._cmd_update_impl(args, False)
+
+    out = capsys.readouterr().out
+    assert "this checkout is newer and waits for the next release" in out
+    assert _git(repo, "rev-parse", "HEAD") == head
