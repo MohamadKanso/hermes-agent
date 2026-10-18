@@ -36,14 +36,19 @@ import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
   buildPollPayload,
+  connectionStateAfterClose,
+  connectionUnavailablePayload,
+  createSendQueue,
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
   buildLocationPayload,
   buildTextSendPayload,
+  partialSendFailurePayload,
   createBoundedMessageStore,
   createQuotedMediaCache,
   extractBridgeEvent,
+  stripLeadingPrefixFromChunks,
   getMessageContent,
   inboundReadReceiptKeys,
   inferMediaType,
@@ -143,30 +148,39 @@ const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000'
 //     Overlapping sends are the root cause of cross-chat contamination
 //     (#33360) — the WhatsApp protocol-level routing can misdeliver when
 //     two sendMessage() Promises race on the same socket. ---
-let _sendQueue = Promise.resolve();
-
-function enqueueSend(fn) {
-  const task = _sendQueue.then(() => fn(), () => fn());
-  _sendQueue = task.catch(() => {});
-  return task;
-}
+const enqueueSend = createSendQueue();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
-      timeoutMs,
-    );
+  const activeSock = sock;
+  return enqueueSend(() => {
+    if (!activeSock || activeSock !== sock || connectionState !== 'connected') {
+      const error = new Error('Not connected to WhatsApp');
+      error.connectionUnavailable = true;
+      throw error;
+    }
+
+    let timer;
+    const sent = Promise.resolve().then(() => activeSock.sendMessage(chatId, payload, options));
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`sendMessage timed out after ${timeoutMs / 1000}s`);
+        error.deliveryUnknown = true;
+        connectionState = 'reconnecting';
+        Promise.resolve().then(() => activeSock.end(error)).catch((closeError) => {
+          console.error(`could not close whatsapp socket after send timeout: ${closeError?.message || closeError}`);
+          enqueueSend.reset();
+          scheduleReconnect(0);
+        });
+        reject(error);
+      }, timeoutMs);
+    });
+    const result = Promise.race([sent, timeout]).finally(() => clearTimeout(timer));
+    return { result, settled: sent };
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
 }
 
 function formatOutgoingMessage(message) {
@@ -376,7 +390,7 @@ function rememberSentId(id) {
 }
 
 let sock = null;
-let connectionState = 'disconnected';
+let connectionState = 'reconnecting';
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -427,7 +441,8 @@ async function startSocket() {
 
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      connectionState = 'disconnected';
+      connectionState = connectionStateAfterClose(reason, DisconnectReason.loggedOut);
+      enqueueSend.reset();
 
       if (reason === DisconnectReason.loggedOut) {
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
@@ -840,7 +855,7 @@ app.get('/messages', (req, res) => {
 // Send a message
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected to WhatsApp', connectionState));
   }
 
   const { chatId, message, replyTo, mentions } = req.body;
@@ -848,9 +863,15 @@ app.post('/send', async (req, res) => {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
 
+  let deliveredChunks = 0;
+  let chunks = [];
+  const messageIds = [];
+  const replyPrefixLength = WHATSAPP_MODE === 'self-chat' && REPLY_PREFIX
+    ? REPLY_PREFIX.length
+    : 0;
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
-    const messageIds = [];
+    const formattedMessage = formatOutgoingMessage(message);
+    chunks = splitLongMessage(formattedMessage);
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
@@ -859,6 +880,7 @@ app.post('/send', async (req, res) => {
         messageStore,
       });
       const sent = await sendWithTimeout(chatId, payload, options);
+      deliveredChunks += 1;
       trackSentMessageId(sent);
       messageStore.remember(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
@@ -871,16 +893,24 @@ app.post('/send', async (req, res) => {
       success: true,
       messageId: messageIds[messageIds.length - 1],
       messageIds,
+      deliveredChunks: chunks.length,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err?.connectionUnavailable && deliveredChunks === 0) {
+      return res.status(503).json(connectionUnavailablePayload(err.message, connectionState));
+    }
+    res.status(500).json(partialSendFailurePayload(err, deliveredChunks, {
+      deliveredPrefix: stripLeadingPrefixFromChunks(chunks.slice(0, deliveredChunks), replyPrefixLength),
+      deliveredMessageIds: messageIds,
+      unattemptedChunks: Math.max(0, chunks.length - deliveredChunks - (err?.connectionUnavailable ? 0 : 1)),
+    }));
   }
 });
 
 // Edit a previously sent message
 app.post('/edit', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected to WhatsApp', connectionState));
   }
 
   const { chatId, messageId, message } = req.body;
@@ -888,17 +918,29 @@ app.post('/edit', async (req, res) => {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
 
+  let deliveredChunks = 0;
+  let chunks = [];
+  const messageIds = [];
+  const replyPrefixLength = WHATSAPP_MODE === 'self-chat' && REPLY_PREFIX
+    ? REPLY_PREFIX.length
+    : 0;
+  let lastMessageId;
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
-    const messageIds = [];
+    const formattedMessage = formatOutgoingMessage(message);
+    chunks = splitLongMessage(formattedMessage);
 
     await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    deliveredChunks = 1;
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
         const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+        deliveredChunks += 1;
         trackSentMessageId(sent);
-        if (sent?.key?.id) messageIds.push(sent.key.id);
+        if (sent?.key?.id) {
+          messageIds.push(sent.key.id);
+          lastMessageId = sent.key.id;
+        }
         if (i < chunks.length - 1) {
           await sleep(CHUNK_DELAY_MS);
         }
@@ -907,14 +949,22 @@ app.post('/edit', async (req, res) => {
 
     res.json({ success: true, messageIds });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err?.connectionUnavailable && deliveredChunks === 0) {
+      return res.status(503).json(connectionUnavailablePayload(err.message, connectionState));
+    }
+    res.status(500).json(partialSendFailurePayload(err, deliveredChunks, {
+      deliveredPrefix: stripLeadingPrefixFromChunks(chunks.slice(0, deliveredChunks), replyPrefixLength),
+      lastMessageId,
+      deliveredMessageIds: messageIds,
+      unattemptedChunks: Math.max(0, chunks.length - deliveredChunks - (err?.connectionUnavailable ? 0 : 1)),
+    }));
   }
 });
 
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected to WhatsApp', connectionState));
   }
 
   const { chatId, filePath, mediaType, caption, fileName, mentions } = req.body;
@@ -1008,7 +1058,10 @@ app.post('/send-media', async (req, res) => {
     messageStore.remember(sent);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err?.connectionUnavailable) {
+      return res.status(503).json(connectionUnavailablePayload(err.message, connectionState));
+    }
+    res.status(500).json(partialSendFailurePayload(err, 0));
   }
 });
 
@@ -1017,7 +1070,7 @@ app.post('/send-media', async (req, res) => {
 // low-level transport helper.
 app.post('/send-poll', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected to WhatsApp', connectionState));
   }
 
   const { chatId, question, options, selectableCount } = req.body;
@@ -1032,14 +1085,17 @@ app.post('/send-poll', async (req, res) => {
     rememberSentMessage(sent, payload);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    if (err?.connectionUnavailable) {
+      return res.status(503).json(connectionUnavailablePayload(err.message, connectionState));
+    }
+    res.status(400).json(partialSendFailurePayload(err, 0));
   }
 });
 
 // Send native WhatsApp location pin
 app.post('/send-location', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected to WhatsApp', connectionState));
   }
 
   const { chatId, latitude, longitude, name, address } = req.body;
@@ -1054,14 +1110,17 @@ app.post('/send-location', async (req, res) => {
     messageStore.remember(sent);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    if (err?.connectionUnavailable) {
+      return res.status(503).json(connectionUnavailablePayload(err.message, connectionState));
+    }
+    res.status(400).json(partialSendFailurePayload(err, 0));
   }
 });
 
 // Typing indicator
 app.post('/typing', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected', connectionState));
   }
 
   const { chatId } = req.body;
@@ -1079,7 +1138,7 @@ app.post('/typing', async (req, res) => {
 // it through the authoritative DM/group/mention intake policy.
 app.post('/read', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected' });
+    return res.status(503).json(connectionUnavailablePayload('Not connected', connectionState));
   }
 
   const receiptKeys = inboundReadReceiptKeys({

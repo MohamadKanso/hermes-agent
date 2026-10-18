@@ -640,6 +640,291 @@ class TestFinalResponseDeliveryGuard:
 
         assert delivered == ["preview never landed and more streamed text then the end."]
 
+    @pytest.mark.asyncio
+    async def test_unknown_preview_still_delivers_full_answer_at_finalization(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(
+                success=False,
+                error="whatsapp bridge request timed out; delivery status is unknown",
+                raw_response={"delivery_unknown": True, "ambiguous": True},
+            ),
+            SimpleNamespace(success=True, message_id="final-1"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123", StreamConsumerConfig(edit_interval=0.01, cursor=""),
+        )
+        consumer._accumulated = "complete final response"
+
+        assert await consumer._send_or_edit("preview content", finalize=False) is False
+        await consumer._finalize_edit_path(SimpleNamespace(update_visible=False, draft_final_fresh_send=False))
+
+        assert adapter.send.await_count == 2
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._delivery_ambiguous is False
+        assert consumer.delivered_final_matches("complete final response") is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_final_edit_does_not_fall_back_to_a_new_message(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False,
+            error="whatsapp bridge request timed out; delivery status is unknown",
+            raw_response={"delivery_unknown": True, "ambiguous": True},
+        ))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123", StreamConsumerConfig(edit_interval=0.01, cursor=""),
+        )
+
+        assert await consumer._send_or_edit("initial preview") is True
+        assert await consumer._finalize_edit("complete final response") is True
+
+        adapter.send.assert_awaited_once()
+        adapter.edit_message.assert_awaited_once()
+        assert consumer._delivery_ambiguous is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_fresh_segment_final_does_not_fall_through_to_edit(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=False,
+            error="whatsapp bridge request timed out; delivery status is unknown",
+            raw_response={"delivery_unknown": True, "ambiguous": True},
+        ))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="preview"))
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._message_id = "preview"
+        consumer._last_sent_text = "partial response"
+
+        assert await consumer._send_or_edit("segment ending", finalize=True, is_turn_final=False) is False
+
+        adapter.send.assert_awaited_once()
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._delivery_unknown is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_cursor_strip_does_not_suppress_the_full_final(self):
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False,
+            error="whatsapp bridge request timed out; delivery status is unknown",
+            raw_response={"delivery_unknown": True, "ambiguous": True},
+        ))
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="unexpected"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=" ▉"))
+        consumer._message_id = "preview"
+        consumer._last_sent_text = "partial response ▉"
+        consumer._preview_message_ids.add("preview")
+
+        await consumer._try_strip_cursor()
+        await consumer._send_fallback_final("complete response")
+
+        adapter.edit_message.assert_awaited_once()
+        adapter.send.assert_awaited_once()
+        assert consumer._delivery_ambiguous is False
+        assert consumer.delivered_final_matches("complete response") is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_segment_tail_send_does_not_suppress_the_full_final(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(
+                success=False,
+                error="whatsapp bridge request timed out; delivery status is unknown",
+                raw_response={"delivery_unknown": True, "ambiguous": True},
+            ),
+            SimpleNamespace(success=True, message_id="final-1"),
+        ])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._fallback_final_send = True
+        consumer._accumulated = "the unseen tail"
+
+        await consumer._flush_segment_tail_on_edit_failure()
+        await consumer._send_fallback_final("full answer")
+
+        assert adapter.send.await_count == 2
+        assert consumer._delivery_ambiguous is False
+        assert consumer.delivered_final_matches("full answer") is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_fallback_chunk_is_not_replayed(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._split_text_chunks = MagicMock(return_value=["first chunk", "second chunk", "third chunk"])
+        consumer._send_with_flood_retry = AsyncMock(return_value=
+            SimpleNamespace(
+                success=False,
+                raw_response={"delivery_unknown": True, "ambiguous": True},
+            ),
+        )
+
+        await consumer._send_fallback_final("full response")
+
+        assert [call.kwargs["content"] for call in consumer._send_with_flood_retry.await_args_list] == ["first chunk"]
+        assert consumer._delivery_ambiguous is True
+        assert consumer._final_response_sent is False
+        assert consumer._final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_partial_fresh_final_sends_only_confirmed_missing_tail(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(
+                success=False,
+                raw_response={
+                    "partial_overflow": True,
+                    "delivered_prefix": "confirmed ",
+                    "last_message_id": "preview-tail",
+                },
+            ),
+            SimpleNamespace(success=True, message_id="final-tail"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._message_id = "preview"
+        consumer._last_sent_text = "old preview"
+        consumer._preview_message_ids.add("preview")
+        consumer._accumulated = "confirmed rest"
+        consumer._fallback_len_budget = MagicMock(return_value=(len, 4096))
+        consumer._split_text_chunks = MagicMock(side_effect=lambda text, *_args, **_kwargs: [text])
+
+        assert await consumer._send_or_edit("confirmed rest", finalize=True) is False
+        assert consumer._fallback_final_send is True
+        await consumer._finalize_edit_path(SimpleNamespace(update_visible=False, draft_final_fresh_send=False))
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[1].kwargs["content"] == "rest"
+        adapter.edit_message.assert_not_awaited()
+        assert "preview" in consumer._preview_message_ids
+        assert consumer._delivery_ambiguous is False
+
+    @pytest.mark.asyncio
+    async def test_first_send_partial_failure_resumes_from_confirmed_prefix(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, raw_response={
+                "partial_overflow": True,
+                "delivered_prefix": "confirmed ",
+            }),
+            SimpleNamespace(success=True, message_id="tail-1"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._accumulated = "confirmed rest"
+
+        assert await consumer._send_or_edit("confirmed rest", finalize=True) is False
+        await consumer._finalize_edit_path(SimpleNamespace(update_visible=False, draft_final_fresh_send=False))
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[1].kwargs["content"] == "rest"
+        adapter.edit_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unmatched_partial_unknown_final_sends_full_answer(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, raw_response={
+                "delivery_unknown": True,
+                "ambiguous": True,
+                "partial_overflow": True,
+                "delivered_prefix": "formatted ",
+            }),
+            SimpleNamespace(success=True, message_id="final-1"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._message_id = "preview"
+        consumer._last_sent_text = "partial"
+        consumer._accumulated = "actual final"
+
+        assert await consumer._send_or_edit("actual final", finalize=True) is False
+        assert consumer._fallback_final_send is True
+        assert consumer._final_content_delivered is False
+        await consumer._finalize_edit_path(SimpleNamespace(update_visible=False, draft_final_fresh_send=False))
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[1].kwargs["content"] == "actual final"
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._delivery_ambiguous is False
+        assert consumer.delivered_final_matches("actual final") is True
+
+    @pytest.mark.asyncio
+    async def test_unmatched_confirmed_prefix_resends_the_complete_final(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, raw_response={
+                "partial_overflow": True,
+                "delivered_prefix": "formatted ",
+                "last_message_id": "partial-tail",
+                "delivered_message_ids": ["partial-head", "partial-middle", "partial-tail"],
+            }),
+            SimpleNamespace(success=True, message_id="final-3"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.delete_message = AsyncMock(return_value=True)
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._message_id = "preview"
+        consumer._track_preview_id("preview")
+        consumer._last_sent_text = "old preview"
+        consumer._accumulated = "actual final"
+
+        assert await consumer._send_or_edit("actual final", finalize=True) is False
+        assert consumer._fallback_final_send is True
+        await consumer._finalize_edit_path(SimpleNamespace(update_visible=False, draft_final_fresh_send=False))
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[1].kwargs["content"] == "actual final"
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._delivery_ambiguous is False
+        assert consumer.delivered_final_matches("actual final") is True
+        deleted_ids = {call.args[1] for call in adapter.delete_message.await_args_list}
+        assert {"preview", "partial-head", "partial-middle", "partial-tail"} <= deleted_ids
+        assert "final-3" not in deleted_ids
+
+    @pytest.mark.asyncio
+    async def test_matching_prefix_unknown_final_sends_full_answer(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, raw_response={
+                "delivery_unknown": True,
+                "ambiguous": True,
+                "partial_overflow": True,
+                "delivered_prefix": "actual ",
+            }),
+            SimpleNamespace(success=True, message_id="final-2"),
+        ])
+        adapter.edit_message = AsyncMock()
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+        consumer._accumulated = "actual final"
+
+        assert await consumer._send_or_edit("actual final", finalize=True) is False
+        await consumer._finalize_edit_path(SimpleNamespace(update_visible=False, draft_final_fresh_send=False))
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[1].kwargs["content"] == "actual final"
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._delivery_ambiguous is False
+        assert consumer.delivered_final_matches("actual final") is True
+
 
 class TestFinalContentDeliveredGuard:
     """Regression coverage for #25010 — _final_content_delivered must only be

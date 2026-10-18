@@ -88,6 +88,25 @@ class TestSendWithRetrySuccess:
         assert len(adapter._send_calls) == 1
 
 
+class TestSendWithRetryDeliveryUnknown:
+    @pytest.mark.asyncio
+    async def test_unknown_delivery_marker_skips_retry_and_plain_fallback(self):
+        adapter = _StubAdapter()
+        unknown = SendResult(
+            success=False,
+            error="opaque transport failure",
+            raw_response={"delivery_unknown": True},
+        )
+        adapter._send_results = [unknown]
+        adapter._send_plain_fallback = AsyncMock()
+
+        result = await adapter._send_with_retry("chat1", "hello")
+
+        assert result is unknown
+        assert len(adapter._send_calls) == 1
+        adapter._send_plain_fallback.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _send_with_retry — network error with successful retry
 # ---------------------------------------------------------------------------

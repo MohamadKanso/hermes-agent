@@ -696,6 +696,97 @@ export function createReconnectScheduler(startFn, {
   return scheduleReconnect;
 }
 
+export function connectionStateAfterClose(reason, loggedOutReason) {
+  return reason === loggedOutReason ? 'disconnected' : 'reconnecting';
+}
+
+export function connectionUnavailablePayload(error, connectionState) {
+  return { error, connectionState };
+}
+
+export function createSendQueue() {
+  let tail = Promise.resolve();
+  let generation = 0;
+  let invalidateGeneration;
+  let invalidated = new Promise(resolve => { invalidateGeneration = resolve; });
+
+  function enqueue(start) {
+    const queuedGeneration = generation;
+    const queuedInvalidated = invalidated;
+    let started = false;
+    const task = tail.then(() => {
+      if (queuedGeneration !== generation) {
+        const error = new Error('Not connected to WhatsApp');
+        error.connectionUnavailable = true;
+        throw error;
+      }
+      started = true;
+      return start();
+    });
+    tail = task.then(
+      operation => Promise.race([
+        Promise.resolve(operation.settled).then(() => undefined, () => undefined),
+        queuedInvalidated,
+      ]),
+      () => undefined,
+    ).catch(() => {});
+
+    const result = task.then(operation => operation.result);
+    const cancelled = queuedInvalidated.then(() => {
+      const error = new Error('Not connected to WhatsApp');
+      if (started) {
+        error.deliveryUnknown = true;
+        error.ambiguous = true;
+      } else {
+        error.connectionUnavailable = true;
+      }
+      throw error;
+    });
+    return Promise.race([result, cancelled]);
+  }
+
+  enqueue.reset = () => {
+    generation += 1;
+    invalidateGeneration();
+    tail = Promise.resolve();
+    invalidated = new Promise(resolve => { invalidateGeneration = resolve; });
+  };
+
+  return enqueue;
+}
+
+export function stripLeadingPrefixFromChunks(chunks, prefixLength) {
+  let remaining = Number.isInteger(prefixLength) && prefixLength > 0 ? prefixLength : 0;
+  return chunks.map(chunk => {
+    const skipped = Math.min(remaining, chunk.length);
+    remaining -= skipped;
+    return chunk.slice(skipped);
+  }).join('');
+}
+
+export function partialSendFailurePayload(error, deliveredChunks, details = {}) {
+  const count = Number.isInteger(deliveredChunks) && deliveredChunks > 0 ? deliveredChunks : 0;
+  const unattemptedChunks = Number.isInteger(details.unattemptedChunks) && details.unattemptedChunks > 0
+    ? details.unattemptedChunks
+    : 0;
+  const partialDelivery = count > 0 || unattemptedChunks > 0;
+  const deliveryUnknown = error?.deliveryUnknown === true;
+  return {
+    error: error?.message || String(error || 'WhatsApp send failed'),
+    ...(deliveryUnknown && { delivery_unknown: true, ambiguous: true }),
+    ...(partialDelivery && {
+      partial_overflow: true,
+      delivered_chunks: count,
+      ...(unattemptedChunks > 0 && { unattempted_chunks: unattemptedChunks }),
+      ...(typeof details.deliveredPrefix === 'string' && { delivered_prefix: details.deliveredPrefix }),
+      ...(typeof details.lastMessageId === 'string' && { last_message_id: details.lastMessageId }),
+      ...(Array.isArray(details.deliveredMessageIds) && {
+        delivered_message_ids: details.deliveredMessageIds.filter(id => typeof id === 'string'),
+      }),
+    }),
+  };
+}
+
 /**
  * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
  * raw.githubusercontent.com with no AbortSignal; a stalled connection can

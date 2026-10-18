@@ -411,6 +411,9 @@ class GatewayTurnProgressMixin:
             )
             if getattr(result, "success", False):
                 return
+            if self._progress_delivery_unknown(result):
+                st.publication_suppressed = True
+                return
             # P5(b): R5-4 made a declined native CARD terminal but left this
             # editable-text fallback: a declined edit fell through to
             # _send_progress_text and re-sent the same task text to the refused
@@ -424,6 +427,9 @@ class GatewayTurnProgressMixin:
                 st.publication_suppressed = True
                 return
         result = await self._send_progress_text(st, text)
+        if self._progress_delivery_unknown(result):
+            st.publication_suppressed = True
+            return
         if getattr(result, "success", False) and getattr(result, "message_id", None):
             st.fallback_msg_id = str(result.message_id)
 
@@ -452,6 +458,10 @@ class GatewayTurnProgressMixin:
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
+                return
+            if self._progress_delivery_unknown(result):
+                st.publication_suppressed = True
+                st.native_failed = True
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
             # fallback below sends the same task text to the same chat, which
@@ -552,6 +562,13 @@ class GatewayTurnProgressMixin:
 
     # ── editable progress bubbles (progress-queue drain) ────────────────────────────────────
 
+    @staticmethod
+    def _progress_delivery_unknown(result) -> bool:
+        if getattr(result, "delivery_unknown", False) is True:
+            return True
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("delivery_unknown") or raw.get("ambiguous"))
+
     @dataclasses.dataclass
     class _ProgressEditState:
         """Mutable editable-bubble state shared by ``send_progress_messages`` and its helpers."""
@@ -562,6 +579,7 @@ class GatewayTurnProgressMixin:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        delivery_unknown: bool = False
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -626,6 +644,8 @@ class GatewayTurnProgressMixin:
         Returns True when it delivered/split the buffer or a transient edit failure left it
         intact for retry — either way the caller skips the normal send/edit path this tick.
         """
+        if st.delivery_unknown:
+            return True
         if not st.progress_lines or not st.can_edit:
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
@@ -634,6 +654,9 @@ class GatewayTurnProgressMixin:
         if st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
             if not result.success:
+                if self._progress_delivery_unknown(result):
+                    st.delivery_unknown = True
+                    return True
                 if getattr(result, "retryable", False):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
                     return True
@@ -643,6 +666,9 @@ class GatewayTurnProgressMixin:
             groups = groups[1:]
         for group in groups:
             result = await self._send_progress_text(st, self._progress_text(group))
+            if self._progress_delivery_unknown(result):
+                st.delivery_unknown = True
+                return True
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
         # The newest continuation is the only mutable bubble: keep just its lines so later
@@ -672,9 +698,11 @@ class GatewayTurnProgressMixin:
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
+        if not st.delivery_unknown and st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                if self._progress_delivery_unknown(result):
+                    st.delivery_unknown = True
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -707,10 +735,15 @@ class GatewayTurnProgressMixin:
         Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
+        if st.delivery_unknown:
+            return False
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
                 return True
+            if self._progress_delivery_unknown(result):
+                st.delivery_unknown = True
+                return False
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
                 return False
@@ -718,10 +751,15 @@ class GatewayTurnProgressMixin:
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
             else:
                 st.can_edit = False
-            await self._send_progress_text(st, msg)
+            result = await self._send_progress_text(st, msg)
+            if self._progress_delivery_unknown(result):
+                st.delivery_unknown = True
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
         result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        if self._progress_delivery_unknown(result):
+            st.delivery_unknown = True
+            return False
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True

@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -32,8 +33,47 @@ logger = logging.getLogger(__name__)
 
 # Owner-typed inbound text is prefixed at MessageEvent construction so transcripts stay disambiguated before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
+_DEFAULT_WHATSAPP_REPLY_PREFIX = "☤ *Hermes Agent*\n────────────\n"
 
 _RUN_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
+
+_JS_TRIM_WHITESPACE = frozenset({
+    0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020, 0x00A0, 0x1680,
+    *range(0x2000, 0x200B), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF,
+})
+
+
+def _bridge_message_chunk_count(message: str, max_length: int) -> int:
+    """count chunks with the bridge's utf-16 and whitespace-aware split rules."""
+    encoded = message.encode("utf-16-le", errors="surrogatepass")
+    units = [encoded[index] | encoded[index + 1] << 8 for index in range(0, len(encoded), 2)]
+    if not units or max_length < 1 or len(units) <= max_length:
+        return 1
+
+    chunks = 0
+    start = 0
+    while len(units) - start > max_length:
+        search_end = start + max_length
+        split_at = -1
+        for index in range(search_end, start - 1, -1):
+            if units[index] == 0x000A:
+                split_at = index - start
+                break
+        if split_at < max_length // 2:
+            split_at = -1
+            for index in range(search_end, start - 1, -1):
+                if units[index] == 0x0020:
+                    split_at = index - start
+                    break
+        if split_at < 1:
+            split_at = max_length
+
+        start += split_at
+        chunks += 1
+        while start < len(units) and units[start] in _JS_TRIM_WHITESPACE:
+            start += 1
+
+    return chunks + (1 if start < len(units) else 0)
 
 
 def _listener_pids_on_port(port: int) -> list:
@@ -399,6 +439,89 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """``session.<method>`` context manager for a bridge endpoint (caller must ``async with``)."""
         import aiohttp
         return getattr(self._http_session, method)(self._bridge_url(path), **kwargs, timeout=aiohttp.ClientTimeout(total=timeout))
+
+    def _bridge_operation_timeout(
+        self, minimum: float, content: Optional[str] = None, *, include_reply_prefix: bool = False,
+    ) -> float:
+        """give the bridge time to return its own delivery verdict before the client times out."""
+        try:
+            bridge_timeout = max(0, int(_wenv("WHATSAPP_SEND_TIMEOUT_MS", "60000"))) / 1000 + 5
+        except (TypeError, ValueError):
+            bridge_timeout = 65.0
+        chunk_count = 1
+        if content:
+            bridge_limit_raw = _wenv("WHATSAPP_MAX_MESSAGE_LENGTH", "4096") or "4096"
+            bridge_limit_match = re.match(r"^\s*([+-]?\d+)", bridge_limit_raw)
+            if bridge_limit_match:
+                bridge_limit = int(bridge_limit_match.group(1))
+            else:
+                bridge_limit = 0
+            message = content
+            if include_reply_prefix and (_wenv("WHATSAPP_MODE", "self-chat") or "self-chat").strip().lower() == "self-chat":
+                reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
+                if not reply_prefix:
+                    reply_prefix = (
+                        self._reply_prefix
+                        if self._reply_prefix is not None
+                        else _DEFAULT_WHATSAPP_REPLY_PREFIX
+                    )
+                reply_prefix = reply_prefix.replace("\\n", "\n")
+                message = reply_prefix + message
+            if bridge_limit > 0:
+                chunk_count = _bridge_message_chunk_count(message, bridge_limit)
+        return max(float(minimum), bridge_timeout) * chunk_count
+
+    @staticmethod
+    async def _bridge_send_failure(resp: Any) -> SendResult:
+        error = await resp.text()
+        try:
+            payload = json.loads(error)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        retryable = (
+            resp.status == 503
+            and isinstance(payload, dict)
+            and payload.get("connectionState") == "reconnecting"
+            and not payload.get("partial_overflow")
+            and not payload.get("delivery_unknown")
+            and not payload.get("ambiguous")
+        )
+        return SendResult(
+            success=False,
+            message_id=payload.get("last_message_id") if isinstance(payload, dict) else None,
+            error=error,
+            raw_response=payload,
+            retryable=retryable,
+        )
+
+    @staticmethod
+    def _bridge_request_failure(error: Exception, *, response_received: bool = False) -> SendResult:
+        definitely_not_dispatched = not response_received and isinstance(error, (ImportError, TypeError, ValueError))
+        try:
+            import aiohttp
+            if not response_received and isinstance(error, (aiohttp.ClientConnectorError, aiohttp.InvalidURL)):
+                definitely_not_dispatched = True
+        except ImportError:
+            pass
+        if definitely_not_dispatched:
+            return SendResult(success=False, error=str(error), raw_response={"not_dispatched": True})
+        # the request may have been accepted before the response path failed, so don't
+        # let the generic retry layer replay it.
+        error_message = (
+            "whatsapp bridge request timed out; delivery status is unknown"
+            if isinstance(error, TimeoutError)
+            else f"whatsapp bridge request failed; delivery status is unknown: {error}"
+        )
+        return SendResult(
+            success=False,
+            error=error_message,
+            raw_response={"delivery_unknown": True, "ambiguous": True},
+        )
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        """don't plain-text retry when the bridge says the session is logged out."""
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and raw.get("connectionState") == "disconnected"
 
     async def _probe_bridge_health(self) -> tuple[bool, Any]:
         """GET /health with a fresh session → ``(http_200, json)``; unparseable 200 body → ``(True, None)``; connection errors and timeouts propagate."""
@@ -770,14 +893,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _post_bridge_message(self, path: str, payload: dict[str, Any], *, timeout: float) -> SendResult:
         """POST to the bridge; 200 → SendResult(messageId, raw_response), else the error text."""
+        response_received = False
         try:
             async with self._bridge_req("post", path, timeout, json=payload) as resp:
+                response_received = True
                 if resp.status == 200:
                     data = await resp.json()
                     return SendResult(success=True, message_id=data.get("messageId"), raw_response=data)
-                return SendResult(success=False, error=await resp.text())
+                return await self._bridge_send_failure(resp)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return self._bridge_request_failure(e, response_received=response_received)
 
     @_needs_bridge
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -785,6 +910,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
+        sent_chunk_count = 0
+        sent_prefix = ""
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
             sent_message_ids: list[str] = []
@@ -793,26 +920,87 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 payload: dict[str, Any] = {"chatId": chat_id, "message": chunk}
                 if reply_to and idx == 0:
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
-                result = await self._post_bridge_message("send", payload, timeout=30)
+                result = await self._post_bridge_message(
+                    "send", payload,
+                    timeout=self._bridge_operation_timeout(30, chunk, include_reply_prefix=True))
                 if not result.success:
-                    return SendResult(success=False, error=result.error)
-                last_message_id = result.message_id
-                if last_message_id:
-                    sent_message_ids.append(str(last_message_id))
+                    raw_response = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                    bridge_delivered = raw_response.get("delivered_chunks", 0)
+                    if not isinstance(bridge_delivered, int) or isinstance(bridge_delivered, bool):
+                        bridge_delivered = 0
+                    bridge_unattempted = raw_response.get("unattempted_chunks", 0)
+                    if not isinstance(bridge_unattempted, int) or isinstance(bridge_unattempted, bool):
+                        bridge_unattempted = 0
+                    bridge_state = raw_response.get("connectionState")
+                    current_chunk_not_dispatched = (
+                        raw_response.get("not_dispatched") is True
+                        or bridge_state in ("reconnecting", "disconnected")
+                    )
+                    adapter_unattempted = max(
+                        0, len(chunks) - idx - (0 if current_chunk_not_dispatched else 1)
+                    )
+                    delivery_unknown = result.delivery_unknown
+                    partial_delivery = (
+                        sent_chunk_count > 0
+                        or raw_response.get("partial_overflow")
+                        or (delivery_unknown and adapter_unattempted > 0)
+                    )
+                    if partial_delivery:
+                        raw_response["partial_overflow"] = True
+                        raw_response["delivered_chunks"] = sent_chunk_count + max(0, bridge_delivered)
+                        raw_response["unattempted_chunks"] = bridge_unattempted + adapter_unattempted
+                        bridge_prefix = raw_response.get("delivered_prefix", "")
+                        raw_response["delivered_prefix"] = sent_prefix + (
+                            bridge_prefix if isinstance(bridge_prefix, str) else ""
+                        )
+                        bridge_message_ids = raw_response.get("delivered_message_ids", [])
+                        if not isinstance(bridge_message_ids, list):
+                            bridge_message_ids = []
+                        raw_response["delivered_message_ids"] = list(dict.fromkeys(
+                            sent_message_ids + [str(mid) for mid in bridge_message_ids if isinstance(mid, str)]
+                        ))
+                    return SendResult(
+                        success=False,
+                        error=result.error,
+                        raw_response=raw_response or result.raw_response,
+                        retryable=result.retryable and not partial_delivery and not delivery_unknown,
+                    )
+                response_chunks = result.raw_response.get("deliveredChunks") if isinstance(result.raw_response, dict) else None
+                if not isinstance(response_chunks, int) or isinstance(response_chunks, bool) or response_chunks < 1:
+                    message_ids = result.raw_response.get("messageIds") if isinstance(result.raw_response, dict) else None
+                    response_chunks = len(message_ids) if isinstance(message_ids, list) and message_ids else 1
+                sent_chunk_count += response_chunks
+                sent_prefix += chunk
+                response_ids = result.raw_response.get("messageIds") if isinstance(result.raw_response, dict) else None
+                if not isinstance(response_ids, list) or not response_ids:
+                    response_ids = [result.message_id] if result.message_id else []
+                sent_message_ids.extend(
+                    str(mid) for mid in response_ids if isinstance(mid, str) and str(mid) not in sent_message_ids
+                )
+                last_message_id = result.message_id or (sent_message_ids[-1] if sent_message_ids else None)
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)  # avoid rate limiting between chunks
             return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
                               raw_response={"message_ids": sent_message_ids})
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(
+                success=False,
+                error=str(e),
+                raw_response={"partial_overflow": True, "delivered_chunks": sent_chunk_count} if sent_chunk_count else None,
+            )
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        response_received = False
         try:
-            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
-                return SendResult(success=True, message_id=message_id) if resp.status == 200 else SendResult(success=False, error=await resp.text())
+            async with self._bridge_req(
+                "post", "edit", self._bridge_operation_timeout(15, content, include_reply_prefix=True),
+                json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content},
+            ) as resp:
+                response_received = True
+                return SendResult(success=True, message_id=message_id) if resp.status == 200 else await self._bridge_send_failure(resp)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return self._bridge_request_failure(e, response_received=response_received)
 
     @_needs_bridge
     async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
@@ -821,7 +1009,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         jid = to_whatsapp_jid(chat_id)
         payload: dict[str, Any] = {"chatId": jid, "filePath": file_path, "mediaType": media_type}
         payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
-        result = await self._post_bridge_message("send-media", payload, timeout=120)
+        result = await self._post_bridge_message("send-media", payload, timeout=self._bridge_operation_timeout(120))
         if result.success and result.message_id:
             # A later quote of this attachment carries only a thumbnail stub; the bridge's cache
             # knows inbound media only, so index our own sends (the cron-delivered image case).
@@ -834,7 +1022,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_poll(self, chat_id: str, question: str, options: list[str], *, selectable_count: int = 1) -> SendResult:
         """Native WhatsApp poll (low-level transport primitive; approval UX stays gateway-owned)."""
         payload: dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "question": question, "options": list(options or []), "selectableCount": selectable_count}
-        return await self._post_bridge_message("send-poll", payload, timeout=30)
+        return await self._post_bridge_message("send-poll", payload, timeout=self._bridge_operation_timeout(30))
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
                            metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -842,7 +1030,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         clean_choices = [str(choice).strip() for choice in (choices or []) if str(choice).strip()]
         if 2 <= len(clean_choices) <= 12:
             result = await self.send_poll(chat_id, str(question or "").strip(), clean_choices, selectable_count=1)
-            if result.success:
+            if result.success or result.delivery_unknown or self._send_retry_is_final(result):
                 return result
             logger.warning("[%s] Native WhatsApp clarify poll failed; falling back to text: %s", self.name, result.error)
         return await super().send_clarify(chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id, session_key=session_key, metadata=metadata)
@@ -855,7 +1043,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         payload.update({k: v for k, v in (("name", name), ("address", address)) if v})
-        return await self._post_bridge_message("send-location", payload, timeout=30)
+        return await self._post_bridge_message("send-location", payload, timeout=self._bridge_operation_timeout(30))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
                          metadata: Optional[dict[str, Any]] = None) -> SendResult:

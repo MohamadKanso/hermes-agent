@@ -28,6 +28,72 @@ class StreamTransportMixin:
 
     _MIN_NEW_MSG_CHARS = 4
 
+    @staticmethod
+    def _result_delivery_unknown(result: Any) -> bool:
+        if getattr(result, "delivery_unknown", False) is True:
+            return True
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("delivery_unknown") or raw.get("ambiguous"))
+
+    def _prepare_partial_final(self, result: Any, text: str, *, is_turn_final: bool) -> Optional[str]:
+        """resume a split send only from a confirmed prefix that matches the final text."""
+        raw = getattr(result, "raw_response", None)
+        if not (isinstance(raw, dict) and raw.get("partial_overflow")):
+            return None
+        delivered_message_ids = raw.get("delivered_message_ids")
+        if isinstance(delivered_message_ids, list):
+            for message_id in delivered_message_ids:
+                if isinstance(message_id, str):
+                    self._track_preview_id(message_id)
+
+        if self._result_delivery_unknown(result):
+            self._delivery_unknown = True
+            if is_turn_final:
+                self._delivery_ambiguous = False
+                self._fallback_final_send = True
+                self._fallback_prefix = ""
+                self._last_sent_text = ""
+                self._fallback_preserve_partial_messages = False
+                self._already_sent = False
+                self._final_response_sent = False
+                self._final_content_delivered = False
+                if raw.get("last_message_id"):
+                    self._message_id = str(raw["last_message_id"])
+                    self._track_preview_id(self._message_id)
+                return "recover"
+            return "unrecoverable"
+
+        delivered_prefix = raw.get("delivered_prefix")
+        if not isinstance(delivered_prefix, str) or not delivered_prefix or not text.startswith(delivered_prefix):
+            if is_turn_final:
+                self._delivery_ambiguous = False
+                self._fallback_final_send = True
+                self._fallback_prefix = ""
+                self._last_sent_text = ""
+                self._fallback_preserve_partial_messages = False
+                self._already_sent = False
+                self._final_response_sent = False
+                self._final_content_delivered = False
+                if raw.get("last_message_id"):
+                    self._message_id = str(raw["last_message_id"])
+                    self._track_preview_id(self._message_id)
+                return "recover"
+            return "unrecoverable"
+
+        self._delivery_unknown = False
+        self._delivery_ambiguous = False
+        self._fallback_final_send = True
+        self._fallback_prefix = delivered_prefix
+        self._last_sent_text = delivered_prefix
+        self._fallback_preserve_partial_messages = True
+        self._final_response_sent = False
+        self._final_content_delivered = False
+        self._already_sent = True
+        if raw.get("last_message_id"):
+            self._message_id = str(raw["last_message_id"])
+            self._track_preview_id(self._message_id)
+        return "recover"
+
     async def _edit_message(self, *, message_id: str, content: str, finalize: bool = False):
         """Edit via the adapter, passing routing metadata when supported."""
         # Contract: adapters must accept finalize= even when False (test-guarded).
@@ -287,6 +353,19 @@ class StreamTransportMixin:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
         if not getattr(result, "success", False):
+            if is_turn_final:
+                partial = self._prepare_partial_final(result, text, is_turn_final=True)
+                if partial == "recover":
+                    return False
+                if partial == "ambiguous":
+                    return True
+            if self._result_delivery_unknown(result):
+                self._delivery_unknown = True
+                if is_turn_final:
+                    self._delivery_ambiguous = True
+                    self._already_sent = True
+                    self._final_content_delivered = True
+                    return True
             return False
         new_message_id = getattr(result, "message_id", None)
         # Best-effort preview cleanup; never delete the message just sent.
@@ -316,6 +395,17 @@ class StreamTransportMixin:
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
         text = self._clean_for_display(text)
+        if self._delivery_unknown:
+            if finalize and is_turn_final:
+                if self._delivery_ambiguous:
+                    return self._final_response_sent
+                # an uncertain preview is not the completed answer. stop editing it,
+                # but give the full final payload one fresh-send path below.
+                self._delivery_unknown = False
+                self._fallback_final_send = True
+                self._fallback_prefix = ""
+                self._last_sent_text = ""
+            return False
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.
@@ -362,7 +452,7 @@ class StreamTransportMixin:
                     # A failed send disabled edits: a preview sent now could never be updated and
                     # would stay on screen truncated next to the final reply. Send only the final.
                     return False
-                return await self._first_send(text, finalize=finalize)
+                return await self._first_send(text, finalize=finalize, is_turn_final=is_turn_final)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
@@ -446,7 +536,7 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
+    async def _first_send(self, text: str, *, finalize: bool, is_turn_final: bool = True) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run (see
@@ -461,6 +551,21 @@ class StreamTransportMixin:
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
+            if finalize and is_turn_final:
+                partial = self._prepare_partial_final(result, text, is_turn_final=True)
+                if partial == "recover":
+                    return False
+                if partial == "ambiguous":
+                    return True
+            if self._result_delivery_unknown(result):
+                self._delivery_unknown = True
+                self._edit_supported = False
+                if finalize and is_turn_final:
+                    self._delivery_ambiguous = True
+                    self._already_sent = True
+                    self._final_content_delivered = True
+                    return True
+                return False
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -492,8 +597,11 @@ class StreamTransportMixin:
         prefers_fresh = self._adapter_prefers_fresh_final(text)  # probed every edit (hook contract)
         if finalize and (
             prefers_fresh or (not has_prefers_hook and self._should_send_fresh_final())
-        ) and await self._try_fresh_final(text, is_turn_final=is_turn_final):
-            return True
+        ):
+            if await self._try_fresh_final(text, is_turn_final=is_turn_final):
+                return True
+            if self._delivery_unknown or self._fallback_final_send:
+                return False
         result = await self._edit_message(message_id=self._message_id, content=text,
                                           finalize=finalize)
         if not result.success:
@@ -531,8 +639,7 @@ class StreamTransportMixin:
 
     async def _on_edit_failure(self, result, text: str, *, finalize: bool, is_turn_final: bool,
                                ) -> bool:
-        """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
-        False; the caller's finalize path may still deliver the tail."""
+        """classify edit failures without duplicating a possibly-delivered message."""
         # P5(b): an AUTHORIZATION decline is terminal for the run. Every branch
         # below treats a failed edit as "editing is unavailable" and hands the
         # unseen tail to the fallback, which SENDS it as a new message to the
@@ -549,6 +656,20 @@ class StreamTransportMixin:
             self._egress_declined = True
             self._edit_supported = False
             return False
+        if finalize and is_turn_final:
+            partial = self._prepare_partial_final(result, text, is_turn_final=True)
+            if partial == "recover":
+                return False
+            if partial == "ambiguous":
+                return True
+        if self._result_delivery_unknown(result):
+            self._delivery_unknown = True
+            if finalize and is_turn_final:
+                self._delivery_ambiguous = True
+                self._already_sent = True
+                self._final_content_delivered = True
+                return True
+            return False
         turn_final = finalize and is_turn_final
         if (turn_final and self.cfg.cursor and self._last_sent_text.endswith(self.cfg.cursor)
                 and self._visible_prefix() == text):
@@ -563,6 +684,11 @@ class StreamTransportMixin:
         # duplicate #45517 fixed (#36965 / #25349).
         raw_response = getattr(result, "raw_response", None)
         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
+            if not finalize or not is_turn_final:
+                # keep the confirmed prefix as an anchor for the eventual final tail.
+                partial = self._prepare_partial_final(result, text, is_turn_final=False)
+                if partial == "recover":
+                    return False
             # Some overflow chunks landed but not the whole response: preserve the
             # visible prefix so got_done sends the missing tail.
             self._message_id = str(raw_response.get("last_message_id") or result.message_id

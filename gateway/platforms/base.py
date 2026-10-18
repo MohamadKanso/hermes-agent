@@ -1656,6 +1656,12 @@ class SendResult:
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
 
+    @property
+    def delivery_unknown(self) -> bool:
+        """true when the transport lost its ack and the send may still have landed."""
+        raw = self.raw_response
+        return isinstance(raw, dict) and bool(raw.get("delivery_unknown") or raw.get("ambiguous"))
+
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
 # typed failure so the delivery ledger owns the wait (#91969: a 97-minute FloodWait slept verbatim
@@ -3534,6 +3540,14 @@ class BasePlatformAdapter(ABC):
         lowered = (error or "").lower()
         return any(pat in lowered for pat in ("timed out", "readtimeout", "writetimeout"))
 
+    @staticmethod
+    def _is_delivery_unknown_result(result: Any) -> bool:
+        """check the normalized flag and raw transport markers for an uncertain send."""
+        if getattr(result, "delivery_unknown", False) is True:
+            return True
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("delivery_unknown") or raw.get("ambiguous"))
+
     def _unwrap_ephemeral(self, response: Any) -> tuple[Optional[str], int]:
         """Unwrap a str/None/:class:`EphemeralReply` response into ``(text, ttl)``. ``ttl > 0``
         means schedule ``_schedule_ephemeral_delete`` after a successful send; forced to 0 when the
@@ -3611,7 +3625,7 @@ class BasePlatformAdapter(ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result):
+        if result.success or self._is_delivery_unknown_result(result) or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
@@ -3663,7 +3677,7 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result):
+                if self._is_delivery_unknown_result(result) or self._send_retry_is_final(result):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after

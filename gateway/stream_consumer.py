@@ -152,6 +152,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # would be stale by completion time. Ported from openclaw/openclaw#72038.
         self._preview_message_ids: set[str] = set()
         self._already_sent = False
+        self._delivery_unknown = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
         self._last_edit_overflowed = False  # last _send_or_edit split into continuations
@@ -312,7 +313,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # gateway suppresses its normal full final send; otherwise users see the same long answer twice when
         # Telegram/Discord rate-limit this cosmetic final edit (#36965, #25349).
         self._final_content_delivered = True
-        if record is not None:
+        if record is not None and not self._delivery_ambiguous:
             self._record_turn_final_payload(record)
 
     def _display_payload(self, text: str) -> str:
@@ -897,7 +898,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # Retry after the finalize tick failed.  finalize=True keeps stream-is-the-
             # message adapters out of the draft-frame branch, whose dedupe against the
             # last UNSEALED frame would report success with no transport call.
-            await self._finalize_edit(self._accumulated)
+            if not await self._finalize_edit(self._accumulated) and self._fallback_final_send:
+                await self._send_fallback_final(self._accumulated)
 
     async def _finalize_edit(self, text: str, *, record: bool = True) -> bool:
         """finalize=True send_or_edit; on success mark the turn delivered (+ record payload)."""

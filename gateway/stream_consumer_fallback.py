@@ -20,6 +20,8 @@ class StreamFallbackMixin:
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
                               final: bool = False) -> Optional[str]:
         """Send a new chunk threaded to ``reply_to_id``; returns the new message_id."""
+        if self._delivery_unknown:
+            return reply_to_id
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
@@ -27,6 +29,9 @@ class StreamFallbackMixin:
             result = await self.adapter.send(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=not final))
+            if self._result_delivery_unknown(result):
+                self._delivery_unknown = True
+                return reply_to_id
             if not (result.success and result.message_id):
                 self._edit_supported = False
                 return reply_to_id
@@ -96,6 +101,15 @@ class StreamFallbackMixin:
     async def _send_fallback_final(self, text: str) -> None:
         """Send the final continuation after streaming edits stop working (one flood retry
         per chunk)."""
+        if self._delivery_ambiguous:
+            return
+        if self._delivery_unknown:
+            # the uncertain request was interim, so its preview can't stand in for
+            # the completed answer. send the full final without using that preview as
+            # a continuation anchor.
+            self._delivery_unknown = False
+            self._fallback_prefix = ""
+            self._last_sent_text = ""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run. The
             # whole point of this path is to deliver the unseen tail as a NEW
@@ -126,11 +140,22 @@ class StreamFallbackMixin:
         # Thread only a FULL resend (it replaces the preview); a tail continuation
         # keeps its existing unthreaded delivery on every platform.
         anchor = self._initial_reply_to_id if continuation == final_text else None
-        for chunk in chunks:
+        for chunk_index, chunk in enumerate(chunks):
             result = await self._send_with_flood_retry(
                 content=chunk, reply_to=None if sent_any_chunk else anchor,
                 retry_log="Flood control on fallback send, retrying in %.1fs")
             if not result or not result.success:
+                if result and self._result_delivery_unknown(result):
+                    has_unsent_chunks = chunk_index + 1 < len(chunks)
+                    self._delivery_unknown = True
+                    self._delivery_ambiguous = True
+                    self._already_sent = sent_any_chunk
+                    self._final_response_sent = not has_unsent_chunks
+                    self._final_content_delivered = not has_unsent_chunks
+                    self._message_id = last_message_id or stale_message_id
+                    self._last_sent_text = last_successful_chunk
+                    self._fallback_prefix = ""
+                    return
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only
                 # prevents a duplicate of the partial.  Nothing landed: let the
@@ -148,10 +173,14 @@ class StreamFallbackMixin:
         # Best-effort delete of the frozen partial — ONLY when the FULL final was
         # re-sent.  If only the missing tail went out, the partial IS the head of
         # the answer ("sent only the second half" symptom).
-        if (stale_message_id and stale_message_id != last_message_id
-                and not self._fallback_preserve_partial_messages and continuation == final_text):
-            await self._delete_previews([stale_message_id], label="Fallback partial",
+        if not self._fallback_preserve_partial_messages and continuation == final_text:
+            stale_ids = self._stale_preview_ids(segment_only=True)
+            if stale_message_id:
+                stale_ids.add(str(stale_message_id))
+            await self._delete_previews(stale_ids, skip=last_message_id, label="Fallback partial",
                                         skip_sentinel=False)
+            self._preview_message_ids.difference_update(stale_ids)
+            self._segment_preview_message_ids.difference_update(stale_ids)
 
         self._message_id = last_message_id
         self._already_sent = True
@@ -233,6 +262,9 @@ class StreamFallbackMixin:
             result = await self.adapter.send(**kwargs)
             if getattr(result, "success", False):
                 break
+            if self._result_delivery_unknown(result):
+                self._delivery_unknown = True
+                break
             retry_delay = self._fallback_flood_retry_delay(result)
             if attempt or retry_delay is None:
                 break  # non-flood error, long flood wait, or second failure
@@ -247,6 +279,8 @@ class StreamFallbackMixin:
         """Commit a completed answer after Telegram finalization fails: "delivered", "failed"
         (gateway may retry), "ambiguous" (a timeout may have landed) or "preview" (flood
         control; the complete preview is authoritative)."""
+        if self._delivery_unknown:
+            return "ambiguous"
         # Segment-scoped only: never delete an earlier finalized preamble.
         stale_ids = self._stale_preview_ids(segment_only=True)
         try:
@@ -285,6 +319,11 @@ class StreamFallbackMixin:
         """Return True for timeout failures where retrying may duplicate."""
         if getattr(result_or_exc, "retryable", None) is True:
             return False
+        if getattr(result_or_exc, "delivery_unknown", False) is True:
+            return True
+        raw = getattr(result_or_exc, "raw_response", None)
+        if isinstance(raw, dict) and (raw.get("delivery_unknown") or raw.get("ambiguous")):
+            return True
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
         return "timeout" in error or "timed out" in error or "timeout" in name
@@ -311,6 +350,8 @@ class StreamFallbackMixin:
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Before a segment reset, send the unseen tail as a new message (and best-effort
         strip the stuck cursor from the partial)."""
+        if self._delivery_unknown:
+            return
         if getattr(self, "_egress_declined", False):
             return  # a new message is exactly the re-addressing the egress guard refused
         if not self._fallback_final_send:
@@ -329,11 +370,15 @@ class StreamFallbackMixin:
             result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:
                 self._already_sent = True
+            elif self._result_delivery_unknown(result):
+                self._delivery_unknown = True
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
 
     async def _try_strip_cursor(self) -> None:
         """Best-effort edit removing a stuck cursor when entering fallback mode."""
+        if self._delivery_unknown:
+            return
         prefix = self._visible_prefix()
         if not self._has_real_preview() or not prefix.strip():
             return
@@ -341,9 +386,13 @@ class StreamFallbackMixin:
             result = await self._edit_message(message_id=self._message_id, content=prefix)
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
+            elif self._result_delivery_unknown(result):
+                self._delivery_unknown = True
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
+        if self._delivery_unknown:
+            return False
         text = self._clean_for_display(text)
         if not text.strip():
             return False

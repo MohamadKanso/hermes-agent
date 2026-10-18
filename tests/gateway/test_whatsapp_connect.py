@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import json
 import signal
 import sys
 import types
@@ -282,8 +283,463 @@ class TestBridgeRuntimeFailure:
         mock_post.assert_awaited_once_with(
             "send",
             {"chatId": "15551234567@s.whatsapp.net", "message": "hello"},
-            timeout=30,
+            timeout=65,
         )
+
+    def test_bridge_request_timeout_covers_internal_bridge_chunks(self):
+        adapter = _make_adapter()
+
+        def scoped_value(name, default=""):
+            return {
+                "WHATSAPP_SEND_TIMEOUT_MS": "90000",
+                "WHATSAPP_MAX_MESSAGE_LENGTH": "1000",
+            }.get(name, default)
+
+        with patch("plugins.platforms.whatsapp.adapter._wenv", side_effect=scoped_value):
+            assert adapter._bridge_operation_timeout(15, "x" * 2000) == 190
+            assert adapter._bridge_operation_timeout(15, "😀" * 1000) == 190
+
+    def test_bridge_request_timeout_counts_self_chat_reply_prefix(self):
+        adapter = _make_adapter()
+        adapter._outgoing_chunk_limit = lambda: 4096
+        adapter._reply_prefix = None
+
+        def scoped_value(name, default=""):
+            return {"WHATSAPP_SEND_TIMEOUT_MS": "60000", "WHATSAPP_MODE": "self-chat"}.get(name, default)
+
+        with patch("plugins.platforms.whatsapp.adapter._wenv", side_effect=scoped_value):
+            assert adapter._bridge_operation_timeout(15, "x" * 4094) == 65
+            assert adapter._bridge_operation_timeout(15, "x" * 4094, include_reply_prefix=True) == 195
+
+    def test_bridge_request_timeout_matches_whitespace_aware_splits(self):
+        adapter = _make_adapter()
+        content = ("😀" * 550 + "\n") * 7 + "😀" * 150
+        assert len(content) == 4007
+        assert len(content) <= adapter._outgoing_chunk_limit()
+
+        def scoped_value(name, default=""):
+            return {
+                "WHATSAPP_SEND_TIMEOUT_MS": "60000",
+                "WHATSAPP_MODE": "self-chat",
+                "WHATSAPP_MAX_MESSAGE_LENGTH": "2000",
+            }.get(name, default)
+
+        with patch("plugins.platforms.whatsapp.adapter._wenv", side_effect=scoped_value):
+            assert adapter._bridge_operation_timeout(15, content, include_reply_prefix=True) == 455
+
+    def test_bridge_request_timeout_uses_configured_bridge_chunk_limit(self):
+        adapter = _make_adapter()
+        adapter._outgoing_chunk_limit = lambda: 4096
+        adapter._reply_prefix = None
+
+        def scoped_value(name, default=""):
+            return {
+                "WHATSAPP_SEND_TIMEOUT_MS": "90000",
+                "WHATSAPP_MODE": "self-chat",
+                "WHATSAPP_MAX_MESSAGE_LENGTH": "2000",
+                "WHATSAPP_REPLY_PREFIX": "p",
+            }.get(name, default)
+
+        with patch("plugins.platforms.whatsapp.adapter._wenv", side_effect=scoped_value):
+            assert adapter._bridge_operation_timeout(15, "x" * 4096, include_reply_prefix=True) == 285
+
+    @pytest.mark.asyncio
+    async def test_send_counts_reconnecting_adapter_chunk_as_unattempted(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._http_session = MagicMock()
+        adapter.format_message = lambda text: text
+        adapter.truncate_message = lambda _text, _limit: ["first", "second", "third"]
+        adapter._outgoing_chunk_limit = lambda: 100
+        results = [
+            SendResult(
+                success=True,
+                message_id="sent-first",
+                raw_response={"messageIds": ["sent-first"], "deliveredChunks": 1},
+            ),
+            SendResult(
+                success=False,
+                error="bridge reconnecting",
+                retryable=True,
+                raw_response={"connectionState": "reconnecting"},
+            ),
+        ]
+
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch.object(adapter, "_post_bridge_message", new_callable=AsyncMock, side_effect=results):
+            result = await adapter.send("+15551234567", "hello")
+
+        assert result.retryable is False
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["unattempted_chunks"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "connection_state", "expected_retryable"),
+        [(503, "reconnecting", True), (503, "disconnected", False), (500, "reconnecting", False)],
+    )
+    async def test_send_result_is_retryable_only_during_bridge_reconnect(self, status, connection_state, expected_retryable):
+        adapter = _make_adapter()
+        payload = {"error": "Not connected to WhatsApp", "connectionState": connection_state}
+
+        class Response:
+            def __init__(self):
+                self.status = status
+
+            async def text(self):
+                return json.dumps(payload)
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()):
+            result = await adapter._post_bridge_message("send", {}, timeout=30)
+
+        assert result.retryable is expected_retryable
+
+    @pytest.mark.asyncio
+    async def test_bridge_partial_failure_is_marked_for_base_delivery_guard(self):
+        adapter = _make_adapter()
+        payload = {
+            "error": "bridge closed",
+            "partial_overflow": True,
+            "delivered_chunks": 1,
+        }
+
+        class Response:
+            status = 500
+
+            async def text(self):
+                return json.dumps(payload)
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()):
+            result = await adapter._post_bridge_message("send", {}, timeout=30)
+
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["delivered_chunks"] == 1
+
+    @pytest.mark.asyncio
+    async def test_bridge_edit_partial_failure_keeps_prefix_and_continuation_id(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        payload = {
+            "error": "bridge closed",
+            "partial_overflow": True,
+            "delivered_chunks": 2,
+            "delivered_prefix": "visible part",
+            "last_message_id": "continuation-1",
+        }
+
+        class Response:
+            status = 500
+
+            async def text(self):
+                return json.dumps(payload)
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()):
+            result = await adapter.edit_message("+15551234567", "original-1", "visible part plus tail")
+
+        assert result.retryable is False
+        assert result.message_id == "continuation-1"
+        assert result.raw_response["delivered_prefix"] == "visible part"
+
+    @pytest.mark.asyncio
+    async def test_bridge_timeout_marks_delivery_as_unknown(self):
+        adapter = _make_adapter()
+
+        with patch.object(adapter, "_bridge_req", side_effect=TimeoutError()):
+            result = await adapter._post_bridge_message("send", {}, timeout=30)
+
+        assert "timed out" in result.error
+        assert result.raw_response["delivery_unknown"] is True
+        assert result.raw_response["ambiguous"] is True
+        assert result.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_bridge_response_read_failure_marks_delivery_as_unknown(self):
+        adapter = _make_adapter()
+
+        class Response:
+            status = 200
+
+            async def json(self):
+                raise ConnectionResetError("connection reset while reading response")
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()):
+            result = await adapter._post_bridge_message("send", {}, timeout=30)
+
+        assert result.delivery_unknown is True
+        assert result.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_bridge_edit_response_read_failure_marks_delivery_as_unknown(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._http_session = MagicMock()
+
+        class Response:
+            status = 500
+
+            async def text(self):
+                raise ValueError("response body could not be decoded")
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()):
+            result = await adapter.edit_message("+15551234567", "message-1", "final text")
+
+        assert result.delivery_unknown is True
+        assert result.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_bridge_local_request_error_is_not_marked_delivery_unknown(self):
+        adapter = _make_adapter()
+
+        with patch.object(adapter, "_bridge_req", side_effect=TypeError("invalid local request")):
+            result = await adapter._post_bridge_message("send", {}, timeout=30)
+
+        assert result.delivery_unknown is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_poll_delivery_does_not_fall_back_to_text_clarify(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        payload = {
+            "error": "sendMessage timed out after 30s",
+            "delivery_unknown": True,
+            "ambiguous": True,
+        }
+
+        class Response:
+            status = 400
+
+            async def text(self):
+                return json.dumps(payload)
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()), patch(
+            "gateway.platforms.base.BasePlatformAdapter.send_clarify", new_callable=AsyncMock,
+        ) as fallback:
+            result = await adapter.send_clarify("+15551234567", "pick one", ["first", "second"], "clarify-1", "session-1")
+
+        assert result.delivery_unknown is True
+        fallback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disconnected_poll_does_not_start_a_text_clarify_fallback(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._http_session = MagicMock()
+        payload = {"error": "Not connected to WhatsApp", "connectionState": "disconnected"}
+
+        class Response:
+            status = 503
+
+            async def text(self):
+                return json.dumps(payload)
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(adapter, "_bridge_req", return_value=ResponseContext()), patch(
+            "gateway.platforms.base.BasePlatformAdapter.send_clarify", new_callable=AsyncMock,
+        ) as fallback:
+            result = await adapter.send_clarify("+15551234567", "pick one", ["first", "second"], "clarify-2", "session-2")
+
+        assert result.raw_response["connectionState"] == "disconnected"
+        fallback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_reconnect_retry_verdict(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._http_session = MagicMock()
+        adapter.format_message = lambda text: text
+        adapter.truncate_message = lambda text, _limit: [text]
+        adapter._outgoing_chunk_limit = lambda: 100
+
+        with patch.object(
+            adapter,
+            "_post_bridge_message",
+            new_callable=AsyncMock,
+            return_value=SendResult(success=False, error="bridge reconnecting", retryable=True),
+        ):
+            result = await adapter.send("+15551234567", "hello")
+
+        assert result.success is False
+        assert result.retryable is True
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_after_a_chunk_was_delivered(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._http_session = MagicMock()
+        adapter.format_message = lambda text: text
+        adapter.truncate_message = lambda _text, _limit: ["first", "second"]
+        adapter._outgoing_chunk_limit = lambda: 100
+        results = [
+            SendResult(
+                success=True,
+                message_id="sent-2",
+                raw_response={"messageIds": ["sent-1", "sent-2"], "deliveredChunks": 2},
+            ),
+            SendResult(success=False, error="bridge reconnecting", retryable=True),
+        ]
+
+        with patch.object(adapter, "_post_bridge_message", new_callable=AsyncMock, side_effect=results):
+            result = await adapter.send("+15551234567", "hello")
+
+        assert result.success is False
+        assert result.retryable is False
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["delivered_chunks"] == 2
+        assert result.raw_response["delivered_message_ids"] == ["sent-1", "sent-2"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_first_chunk_marks_later_chunks_unattempted(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._http_session = MagicMock()
+        adapter.format_message = lambda text: text
+        adapter.truncate_message = lambda _text, _limit: ["first", "second"]
+        adapter._outgoing_chunk_limit = lambda: 100
+
+        unknown = SendResult(
+            success=False,
+            error="send acknowledgement lost",
+            raw_response={
+                "delivery_unknown": True,
+                "ambiguous": True,
+                "delivered_message_ids": ["bridge-partial-1", "bridge-partial-2"],
+                "delivered_prefix": "known prefix",
+            },
+        )
+        with patch.object(adapter, "_post_bridge_message", new_callable=AsyncMock, return_value=unknown):
+            result = await adapter.send("+15551234567", "hello")
+
+        assert result.retryable is False
+        assert result.raw_response["partial_overflow"] is True
+        assert result.raw_response["unattempted_chunks"] == 1
+        assert result.raw_response["delivered_message_ids"] == ["bridge-partial-1", "bridge-partial-2"]
+
+    @pytest.mark.asyncio
+    async def test_base_does_not_retry_or_fallback_after_partial_delivery(self):
+        adapter = _make_adapter()
+        partial = SendResult(
+            success=False,
+            error="later chunk failed",
+            raw_response={"partial_overflow": True, "delivered_chunks": 1},
+        )
+        adapter.send = AsyncMock(return_value=partial)
+        adapter._send_plain_fallback = AsyncMock(return_value=SendResult(success=True))
+
+        result = await adapter._send_with_retry("15551234567@s.whatsapp.net", "original", max_retries=2)
+
+        assert result is partial
+        adapter.send.assert_awaited_once()
+        adapter._send_plain_fallback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_base_does_not_resend_partial_payload_after_transient_failure(self):
+        adapter = _make_adapter()
+        partial = SendResult(
+            success=False,
+            error="connection reset",
+            raw_response={"partial_overflow": True, "delivered_chunks": 1},
+            retryable=True,
+        )
+        adapter.send = AsyncMock(return_value=partial)
+        adapter._send_plain_fallback = AsyncMock(return_value=SendResult(success=True))
+
+        with patch("gateway.platforms.base.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            result = await adapter._send_with_retry(
+                "15551234567@s.whatsapp.net", "original", max_retries=2, base_delay=0,
+            )
+
+        assert result is partial
+        adapter.send.assert_awaited_once()
+        adapter._send_plain_fallback.assert_not_awaited()
+        sleep.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_base_does_not_fallback_after_delivery_unknown_timeout(self):
+        adapter = _make_adapter()
+        timeout = SendResult(
+            success=False,
+            error="whatsapp bridge request timed out; delivery status is unknown",
+            raw_response={"delivery_unknown": True},
+        )
+        adapter.send = AsyncMock(return_value=timeout)
+        adapter._send_plain_fallback = AsyncMock(return_value=SendResult(success=True))
+
+        result = await adapter._send_with_retry("15551234567@s.whatsapp.net", "original", max_retries=2)
+
+        assert result is timeout
+        adapter.send.assert_awaited_once()
+        adapter._send_plain_fallback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_base_does_not_plain_fallback_when_bridge_is_disconnected(self):
+        adapter = _make_adapter()
+        disconnected = SendResult(
+            success=False,
+            error='{"error":"Not connected to WhatsApp","connectionState":"disconnected"}',
+            raw_response={"error": "Not connected to WhatsApp", "connectionState": "disconnected"},
+        )
+        adapter.send = AsyncMock(return_value=disconnected)
+        adapter._send_plain_fallback = AsyncMock(return_value=SendResult(success=True))
+
+        result = await adapter._send_with_retry("15551234567@s.whatsapp.net", "original", max_retries=2)
+
+        assert result is disconnected
+        adapter.send.assert_awaited_once()
+        adapter._send_plain_fallback.assert_not_awaited()
 
 
     @pytest.mark.asyncio

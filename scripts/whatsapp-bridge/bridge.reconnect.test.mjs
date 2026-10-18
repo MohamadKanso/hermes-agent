@@ -16,11 +16,89 @@
 import { strict as assert } from 'node:assert';
 
 import {
+  connectionStateAfterClose,
+  connectionUnavailablePayload,
+  partialSendFailurePayload,
+  createSendQueue,
+  stripLeadingPrefixFromChunks,
   createReconnectScheduler,
   createVersionResolver,
 } from './bridge_helpers.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+assert.equal(connectionStateAfterClose('network-close', 'logged-out'), 'reconnecting');
+assert.equal(connectionStateAfterClose('logged-out', 'logged-out'), 'disconnected');
+assert.equal(stripLeadingPrefixFromChunks(['prefix', ' ab', 'cd'], 6), ' abcd');
+assert.deepEqual(connectionUnavailablePayload('Not connected to WhatsApp', 'reconnecting'), {
+  error: 'Not connected to WhatsApp',
+  connectionState: 'reconnecting',
+});
+assert.deepEqual(partialSendFailurePayload(new Error('bridge closed'), 1), {
+  error: 'bridge closed',
+  partial_overflow: true,
+  delivered_chunks: 1,
+});
+assert.deepEqual(partialSendFailurePayload(new Error('bridge closed'), 1, {
+  deliveredPrefix: 'visible part',
+  lastMessageId: 'continuation-1',
+}), {
+  error: 'bridge closed',
+  partial_overflow: true,
+  delivered_chunks: 1,
+  delivered_prefix: 'visible part',
+  last_message_id: 'continuation-1',
+});
+assert.deepEqual(partialSendFailurePayload(new Error('bridge closed'), 0), {
+  error: 'bridge closed',
+});
+const sendTimeout = Object.assign(new Error('sendMessage timed out after 60s'), { deliveryUnknown: true });
+assert.deepEqual(partialSendFailurePayload(sendTimeout, 0), {
+  error: 'sendMessage timed out after 60s',
+  delivery_unknown: true,
+  ambiguous: true,
+});
+assert.deepEqual(partialSendFailurePayload(sendTimeout, 0, {
+  unattemptedChunks: 2,
+  deliveredPrefix: '',
+  deliveredMessageIds: ['confirmed-1', 'confirmed-2'],
+}), {
+  error: 'sendMessage timed out after 60s',
+  delivery_unknown: true,
+  ambiguous: true,
+  partial_overflow: true,
+  delivered_chunks: 0,
+  unattempted_chunks: 2,
+  delivered_prefix: '',
+  delivered_message_ids: ['confirmed-1', 'confirmed-2'],
+});
+
+// a timeout must not let a still-pending baileys send overlap later work on
+// the same socket. resetting after socket close releases the old queue.
+{
+  const enqueue = createSendQueue();
+  let starts = 0;
+  const first = enqueue(() => {
+    starts += 1;
+    return { result: new Promise(() => {}), settled: new Promise(() => {}) };
+  });
+  const queued = enqueue(() => {
+    starts += 1;
+    return { result: Promise.resolve('old socket'), settled: Promise.resolve() };
+  });
+  await tick();
+  enqueue.reset();
+  await assert.rejects(first, error => error.deliveryUnknown === true);
+  await assert.rejects(queued, error => error.connectionUnavailable === true);
+  assert.equal(starts, 1, 'queued work from the closed socket must not start');
+
+  const fresh = enqueue(() => {
+    starts += 1;
+    return { result: Promise.resolve('new socket'), settled: Promise.resolve() };
+  });
+  assert.equal(await fresh, 'new socket');
+  assert.equal(starts, 2);
+}
 
 // -- createReconnectScheduler ---------------------------------------------
 
