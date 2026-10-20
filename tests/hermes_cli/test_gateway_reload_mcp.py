@@ -1,49 +1,39 @@
-from types import SimpleNamespace
-from pathlib import Path
+"""/reload-mcp on the shared gateway: the gateway reconciles its MCP servers and refreshes its
+agents (``reload.mcp``); the CLI never touches its GatewayAgent stand-in's tools."""
+import asyncio
+from contextlib import asynccontextmanager
 
-import pytest
-
-import hermes_cli.gateway as gateway
-
-
-def test_gateway_reload_mcp_requests_local_reload(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(gateway, "host_multiplexer_serving", lambda: None)
-    monkeypatch.setattr(
-        "gateway.control_socket.reload_gateway_mcp",
-        lambda home: {"reloading": True, "pid": 123},
-    )
-
-    gateway._cmd_reload_mcp(SimpleNamespace())
-
-    assert capsys.readouterr().out == "mcp reload started on gateway pid 123\n"
+from cli import HermesCLI
+from hermes_cli.gateway_connection import GatewayConnection
 
 
-@pytest.mark.parametrize("host_profile", ["default", "host"])
-@pytest.mark.parametrize("standalone", [False, True])
-def test_gateway_reload_mcp_uses_live_host_unless_standalone(
-    monkeypatch, tmp_path, capsys, host_profile, standalone,
-):
-    root = tmp_path / ".hermes"
-    active_profile = root / "profiles" / "worker"
-    active_profile.mkdir(parents=True)
-    (active_profile / "config.yaml").write_text(
-        f"gateway:\n  standalone: {str(standalone).lower()}\n", encoding="utf-8",
-    )
-    host_home = root if host_profile == "default" else root / "profiles" / host_profile
-    seen = []
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(active_profile))
-    monkeypatch.setattr(gateway, "get_hermes_home", lambda: active_profile)
-    monkeypatch.setattr(
-        gateway, "host_multiplexer_serving", lambda: SimpleNamespace(home=host_home),
-    )
-    monkeypatch.setattr(
-        "gateway.control_socket.reload_gateway_mcp",
-        lambda home: seen.append(home) or {"reloading": True},
-    )
+class _Client:
+    def __init__(self):
+        self.events = asyncio.Queue()
+        self.calls = []
 
-    gateway._cmd_reload_mcp(SimpleNamespace())
+    async def rpc(self, method, *, _timeout=None, **params):
+        self.calls.append((method, params))
+        if method == "reload.mcp":
+            return {"status": "reloaded", "message": "MCP servers reconciled (no server changes)"}
+        return {"revision": 2, "execution_generation": 1, "messages": [], "info": {"tool_count": 20}}
 
-    assert seen == [active_profile if standalone else host_home]
-    assert capsys.readouterr().out == "mcp reload started\n"
+
+def test_reload_mcp_runs_on_the_gateway(capsys):
+    client = _Client()
+
+    @asynccontextmanager
+    async def connect():
+        yield client
+    conn = GatewayConnection(connect=connect)
+    conn.start(5)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "local-mcp"
+    cli._command_running = False
+    try:
+        cli._reload_gateway_mcp(conn)
+    finally:
+        conn.close()
+    assert client.calls[0] == ("reload.mcp", {"session_id": "local-mcp", "confirm": True})
+    out = capsys.readouterr().out
+    assert "20 tool(s) available" in out and "MCP reload failed" not in out, out

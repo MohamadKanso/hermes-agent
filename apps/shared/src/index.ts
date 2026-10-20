@@ -27,8 +27,7 @@ export type {
   UsageBarData,
   UsageModelData
 } from './billing-types'
-export { groupCatalogPlugins, PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, sortCatalogPlugins } from './catalog-browse'
-export { pluginCatalogInstallUrl, skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
+export { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
 export {
   driveChargeSettlement,
   SETTLEMENT_MAX_RETRY_AFTER_MS,
@@ -76,6 +75,7 @@ export {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
+  isUndeliveredCorrectionRefusal,
   JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
@@ -175,6 +175,8 @@ export {
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
+export { type UpdateDebt, updateDebt, type UpdateDebtReceipt, type UpdateDebtStep } from './update-debt'
+export { usageFromTick, type UsageTickPayload } from './usage-tick'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

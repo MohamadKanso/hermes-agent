@@ -50,7 +50,7 @@ def test_pause_verb_dispatches_and_returns_ack(tmp_path):
 
 
 def test_unknown_verb_still_lists_pause(tmp_path):
-    server = _make_server(tmp_path, lambda: {})
+    server = _make_server(tmp_path, dict)
     raw = json.dumps({"verb": "nope"}).encode()
     response = json.loads(server.handle_request_line(raw).decode())
     assert response["ok"] is False
@@ -129,7 +129,7 @@ def test_reload_mcp_client_roundtrip_over_real_socket(tmp_path):
 
 
 def test_gateway_reload_handler_schedules_reload_on_gateway_loop(monkeypatch):
-    import gateway.run as gateway_run
+    import gateway.run_bootstrap as run_bootstrap
 
     handlers = {}
 
@@ -145,6 +145,7 @@ def test_gateway_reload_handler_schedules_reload_on_gateway_loop(monkeypatch):
 
     class FakeRunner:
         config = SimpleNamespace(multiplex_profiles=False)
+        session_runtime_descriptor = {}
 
         def __init__(self):
             self.calls = 0
@@ -156,7 +157,7 @@ def test_gateway_reload_handler_schedules_reload_on_gateway_loop(monkeypatch):
     async def scenario():
         runner = FakeRunner()
         monkeypatch.setattr("gateway.control_socket.GatewayControlServer", FakeControlServer)
-        await gateway_run._start_gateway_start_control_socket(runner)
+        await run_bootstrap._start_gateway_start_control_socket(runner)
         reply = await asyncio.to_thread(handlers["reload-mcp"])
         for _ in range(10):
             if runner.calls:
