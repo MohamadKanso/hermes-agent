@@ -46,7 +46,7 @@ If you're just running the Hermes Agent and want to use Docker, see `website/doc
 │   ├── main-hermes/run                ← exec sleep infinity (no-op slot)
 │   └── dashboard/run                  ← if HERMES_DASHBOARD=1, runs `hermes dashboard`
 │
-├── /run/service (s6-svscan watches; tmpfs)
+├── /run/service (s6-svscan watches; backing filesystem depends on deployment)
 │   ├── gateway-coder/                 ← runtime-registered per-profile
 │   │   ├── type        ("longrun")
 │   │   ├── run         ("#!/command/with-contenv sh ... exec s6-setuidgid hermes hermes -p coder gateway run")
@@ -159,7 +159,11 @@ The cont-init reconciler runs as hermes (`s6-setuidgid hermes` in `02-reconcile-
 
 ### Service slot exists but s6-svstat says "s6-supervise not running"
 
-The service directory is on tmpfs and was wiped on container restart. Either the cont-init reconciler hasn't run yet (give it a moment after `docker restart`) or it failed. Check `docker logs <c> | grep '02-reconcile'`.
+Check the filesystem type and mountpoint backing `/run/service` with `docker exec <c> df -hT /run/service`; the mountpoint matters as much as the type. For Docker, inspect `docker inspect <c>` to see whether a separate mount covers `/run` or `/run/service` and whether the root filesystem is read-only.
+
+- If the path is on `tmpfs`, slots are lost when the container stops or restarts. Check whether the cont-init reconciler has run and inspect `docker logs <c> | grep '02-reconcile'`.
+- If `overlay` is mounted at `/`, no separate mount covers `/run` or `/run/service`, and your runtime preserves the writable layer across `docker restart` (verify this on your setup), a slot is expected to survive that restart. Container recreation generally discards the layer. If a restart removes the slot, check the runtime's mount and restart behavior before concluding registration failed.
+- For other filesystems or mountpoints, inspect that mount's configuration and lifecycle before deciding when slots are lost.
 
 ### Gateway starts then immediately exits (`down (exitcode 1)` in svstat)
 
