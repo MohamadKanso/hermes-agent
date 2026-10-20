@@ -17,11 +17,30 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
 | `security` | `redact_secrets`, `website_blocklist` |
+| `skills` | `external_dirs` (shared skill roots), `create_dir` |
 | `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
 
 `hermes config check` reports sections missing from an older config.
+
+### Sharing Skills Across Profiles (`skills.external_dirs`)
+
+Profiles keep separate local skill directories. To share skills, put them in a directory accessible to
+each profile and list that same path under `skills.external_dirs` in each profile's `config.yaml`:
+
+```yaml
+skills:
+  external_dirs:
+    - /path/to/shared-skills
+```
+
+Search roots are ordered by precedence: `project → local → skills.create_dir → external_dirs`; a
+same-named skill in a higher tier shadows lower-tier copies. External directories are not read-only:
+if Hermes can write to one, `skill_manage` can modify its skills. Missing paths are silently skipped.
+See the [External Skill
+Directories](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills#external-skill-directories)
+docs for details.
 
 ### Toolsets
 
