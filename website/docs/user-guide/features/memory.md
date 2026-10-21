@@ -182,6 +182,29 @@ Memory has strict character limits to keep system prompts bounded:
 | memory | 2,200 chars | 8-15 entries |
 | user | 1,375 chars | 5-10 entries |
 
+These are default prompt budgets, not fixed limits. To give either store more room, set
+`memory.memory_char_limit` or `memory.user_char_limit` in the active profile's `config.yaml`.
+With the default Hermes home, the default profile uses `~/.hermes/config.yaml`; each named profile
+has its own `~/.hermes/profiles/<name>/config.yaml`. If you use a custom `HERMES_HOME`, use these
+same paths under that directory. Add the setting to the profile's existing `memory:` section, for
+example:
+
+```yaml
+memory:
+  memory_char_limit: 4400
+```
+
+Memory is injected into every new session's system prompt. A larger budget lets it use more of the
+model's context, leaving less available for the current task. Restart a long-running Hermes process
+to load a changed setting; that does not refresh the frozen prompt of an existing session. Start a
+fresh session after restarting to load the latest saved memory under the new budget. See
+[Memory Configuration](../configuration.md#memory-configuration) for both settings.
+
+The built-in loader reads only `MEMORY.md` and `USER.md`; adding a `MEMORY2.md` file does not
+create another automatically loaded store. Keep longer notes in separate files and read them when
+needed, or use [session search](../sessions.md#session-search-tool) to find information in past
+conversations.
+
 ### What Happens When Memory is Full
 
 When you try to add an entry that would exceed the limit, the tool returns an error:
