@@ -4,6 +4,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -4445,15 +4446,21 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
-        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+    def _build_model_keyboard(self, models: list, page: int, provider: Optional[dict] = None) -> tuple:
+        """Build paginated model buttons. Returns (keyboard, page_info_text). Window plans: each button
+        carries the plan word (``model-b · Large``) from the provider row; other accounts are unchanged."""
+        from hermes_cli.model_picker_usage import picker_row_suffix
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons: list = []
         for i, model_id in enumerate(page_models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
-                short = short[:35] + "..."
+            suffix = picker_row_suffix(provider, model_id)
+            room = 38 - (len(suffix) + 3 if suffix else 0)
+            if len(short) > room:
+                short = short[:max(room - 3, 8)] + "..."
+            if suffix:
+                short = f"{short} · {suffix}"
             buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
         return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
 
@@ -4466,17 +4473,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
         pname = state.get("selected_provider_name", "")
         provider_slug = state.get("selected_provider", "")
         provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
+        keyboard, page_info = self._build_model_keyboard(models, page, provider)
         total = provider.get("total_models", len(models)) if provider else len(models)
         shown = len(models)
         extra = f"\n_{t('platform.telegram.picker.more_available', count=str(total - shown))}_" if total > shown else ""
+        # Window plans: the limit line under the provider (absent for every other account).
+        plan_line = f"\n⚠️ {provider['plan_line']}" if provider and provider.get("plan_line") else ""
         await self._picker_edit(
             query,
             f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
-            f"{t('platform.telegram.picker.provider_label', provider=f'*{pname}*')}{page_info}\n"
+            f"{t('platform.telegram.picker.provider_label', provider=f'*{pname}*')}{page_info}{plan_line}\n"
             f"{t('platform.telegram.picker.select_model')}{extra}",
             keyboard)
 
@@ -7134,7 +7143,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
+            edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
+
+    @staticmethod
+    def _edit_revision(message, update_id: Optional[int]) -> Optional[str]:
+        """Identity of one edit of a message, None for a new send. ``edit_date`` has whole-second
+        resolution, so two edits in one second would share it: the update id is unique per edit and
+        stable on redelivery; without one, the edited text tells same-second edits apart."""
+        edit_date = getattr(message, "edit_date", None)
+        if not hasattr(edit_date, "timestamp"):
+            return None
+        if update_id is not None:
+            return f"u{update_id}"
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").encode()
+        return f"{int(edit_date.timestamp())}.{hashlib.sha256(text).hexdigest()[:16]}"
 
     # -- Message reactions (processing lifecycle) --
 

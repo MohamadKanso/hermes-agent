@@ -324,7 +324,11 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         from gateway.session_local_recovery import local_history, prepare_history
         prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
-        # A delete or eviction can land during that await: re-check, so it answers not_found, never a KeyError.
+        from gateway.session_onboarding import keep_from_discard
+        # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
+        # before the join, and a delete already past it answers not_found below.
+        await keep_from_discard(self, ref.session_id)
+        # A delete or eviction can land during those awaits: re-check, so it answers not_found, never a KeyError.
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows
@@ -526,6 +530,8 @@ class SessionAuthority:
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
+        if revision := payload['native_text_v1']['event'].get('edit_revision'):
+            request_id += ':edit:' + revision  # an edit is its own input, not a changed replay of the send
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
         # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
         from gateway import session_retry_admission
