@@ -1,3 +1,4 @@
+import { fileUrlToNativePath } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
@@ -10,6 +11,7 @@ import type {
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { defaultRehypePlugins, defaultRemarkPlugins, Streamdown } from 'streamdown'
 
+import { getApiRequestConnection } from '@/api/client'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
@@ -190,18 +192,18 @@ function isTypableElement(el: Element | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
+function fileEditScopeKey() {
+  // The REST wrapper has its own routing authority. Include it while the
+  // resolved connection descriptor is catching up with an activation.
+  return JSON.stringify([desktopFsCacheKey(), getApiRequestConnection()])
+}
+
 function filePathForTarget(target: PreviewTarget) {
   if (target.path) {
     return target.path
   }
 
-  try {
-    const url = new URL(target.url)
-
-    return url.protocol === 'file:' ? decodeURIComponent(url.pathname) : target.url
-  } catch {
-    return target.url
-  }
+  return fileUrlToNativePath(target.url) ?? target.url
 }
 
 function formatBytes(bytes: number | undefined) {
@@ -768,6 +770,7 @@ export function LocalFilePreview({
   const [editing, setEditing] = useState(false)
   const draftRef = useRef('')
   const baselineRef = useRef('')
+  const editorScopeRef = useRef('')
   const [dirty, setDirty] = useState(false)
   const [editorKey, setEditorKey] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -958,6 +961,7 @@ export function LocalFilePreview({
 
   const beginEdit = () => {
     const text = state.text ?? ''
+    editorScopeRef.current = fileEditScopeKey()
     baselineRef.current = text
     draftRef.current = text
     setDirty(false)
@@ -1027,7 +1031,19 @@ export function LocalFilePreview({
     setSaving(true)
     setSaveError(null)
 
+    // Keep the edit's owner across awaits: the FS facade routes each call via
+    // the window's current connection, which can change while validation waits.
+    const saveScope = editorScopeRef.current
+
+    const requireEditorOwner = () => {
+      if (fileEditScopeKey() !== saveScope) {
+        throw new Error(t.preview.saveScopeChanged)
+      }
+    }
+
     try {
+      requireEditorOwner()
+
       // Stale-on-disk guard: re-read what's on disk now and compare to the
       // snapshot the user started from. If something changed underneath (an
       // agent edit, an external save), don't clobber it silently — surface the
@@ -1047,6 +1063,9 @@ export function LocalFilePreview({
         }
       }
 
+      // Also guards Overwrite: bypassing a content conflict never authorizes
+      // writing the same path on another connection/profile or this device.
+      requireEditorOwner()
       await writeDesktopFileText(filePath, draftRef.current)
       baselineRef.current = draftRef.current
       setDirty(false)
