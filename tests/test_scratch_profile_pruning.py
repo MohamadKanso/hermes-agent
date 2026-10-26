@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+from tests.waiting import wait_until
+
 
 def _seed_scratch(home: Path) -> tuple[Path, Path]:
     scratch = home / "cache" / "scratch"
@@ -42,34 +44,28 @@ for home in sys.argv[1:]:
     assert export_scratch_tmp_env()
     assert Path(os.environ['TMPDIR']) == Path(home) / 'cache' / 'scratch'
 """, *homes[1:])
-    for idle, fresh in entries:
-        assert not idle.exists()
+    # the due pass runs in a detached child, so wait for it instead of the boot process
+    for idle, _ in entries:
+        wait_until(lambda idle=idle: not idle.exists(), timeout=60, what="the detached prune removing the idle entry")
+    for _, fresh in entries:
         assert fresh.exists()
 
 
-def test_recent_stamp_and_once_per_root_guards_remain_independent(tmp_path: Path) -> None:
+def test_recent_stamp_and_once_per_root_guards_remain_independent(tmp_path: Path, monkeypatch) -> None:
+    import hermes_constants
+    import hermes_constants_scratch_detach as detach
+
+    spawned: list[Path] = []
+    monkeypatch.setattr(detach, "spawn_prune", spawned.append)
+    monkeypatch.setattr(hermes_constants, "_scratch_pruned_roots", set())
     default, profile = tmp_path / "default", tmp_path / "profiles" / "one"
-    default_idle, _ = _seed_scratch(default)
-    profile_idle, _ = _seed_scratch(profile)
-    (default_idle.parent / ".last_prune").touch()
-    _boot(default, """
-import os, sys, time
-from pathlib import Path
-import hermes_bootstrap
-from hermes_constants import get_scratch_dir
-home = Path(sys.argv[1])
-scratch = get_scratch_dir(home)
-late = scratch / 'late.txt'
-late.write_text('old scratch', encoding='utf-8')
-(scratch / '.last_prune').touch()
-ancient = time.time() - 30 * 3600
-for path in (late, scratch / '.last_prune'):
-    os.utime(path, (ancient, ancient))
-get_scratch_dir(home / 'cache' / '..')
-assert late.exists(), 'the same root must not be pruned twice in a process'
-""", profile)
-    assert default_idle.exists(), "a recent stamp must still suppress pruning"
-    assert not profile_idle.exists(), "another root's stamp must not suppress this profile"
-    assert (profile_idle.parent / "late.txt").exists()
-    _boot(profile, "import hermes_bootstrap")
-    assert not (profile_idle.parent / "late.txt").exists()
+    default_scratch = hermes_constants.get_scratch_dir(default, prune=False)
+    profile_scratch = hermes_constants.get_scratch_dir(profile, prune=False)
+    (default_scratch / ".last_prune").touch()
+
+    hermes_constants._prune_scratch_dir_once(default_scratch)
+    assert spawned == [], "a recent stamp must still suppress pruning"
+    hermes_constants._prune_scratch_dir_once(profile_scratch)
+    assert spawned == [profile_scratch], "another root's stamp must not suppress this profile"
+    hermes_constants._prune_scratch_dir_once(profile_scratch / ".." / "scratch")
+    assert spawned == [profile_scratch], "the same root must not be pruned twice in a process"
