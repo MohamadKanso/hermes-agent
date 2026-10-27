@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-27 00:30 utc | pr-upkeep | surveyed 40 open prs, no reviews or failing ci or new feedback, only #118489 conflicts (main deleted host-backend-attach.ts, needs owner), nothing pushed or queued
 2026-10-26 23:20 utc | new-contribution | queued fix/145268-tui-checkpoint-limits for #145268 (desktop/tui ignored checkpoint limits), self-review 90, skipped #145275 (already fixed on main for native host) and #145257/#145263 (open prs)
 2026-10-26 20:43 utc | outbox poster | pr create refused for docs/144424-in-place-compaction-lineage: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);closed #135334;marked #137982 ready;marked #137868 ready;marked #135528 ready;marked #135070 ready;marked #134924 ready;marked #135045 ready;marked #132413 ready;marked #133998 ready;marked #132418 ready;marked #134907 ready
 2026-10-26 18:30 utc | pr-upkeep | merged main into #134907 (conflict, pushed), queued close for #135334 (issue closed by #135726) and ready for 10 reviewed drafts, no review requests or ci failures found, 41 open
