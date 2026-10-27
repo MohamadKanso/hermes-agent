@@ -11,3 +11,4 @@ The poster removes a line once it is done.
 pr | docs/144424-in-place-compaction-lineage | #144424 | docs(sessions): describe in-place compaction as the default lineage behavior
 pr | fix/145268-tui-checkpoint-limits | #145268 | fix(tui-gateway): pass checkpoint size and count limits from config to desktop and tui agents
 pr | fix/145412-telegram-standalone-timeouts | #145412 | fix(send-message): apply telegram http timeouts to the standalone send lane
+pr | fix/145545-comfyui-timeout-hint | #145545 | fix(comfyui): point the wait-timeout hint back at the submitted job
