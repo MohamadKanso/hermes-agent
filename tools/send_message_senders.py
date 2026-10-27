@@ -105,21 +105,45 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
+def _telegram_http_timeouts():
+    """HTTPXRequest timeouts shared with the gateway adapter (same env vars and defaults), so the
+    standalone lane doesn't fall back to PTB's 5s/1s defaults."""
+    from utils import env_float
+    return {
+        "pool_timeout": env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+        "connect_timeout": env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+        "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+        "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+    }
+
+
 def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
     blocked); falls back to a direct connection."""
     from telegram import Bot
+    from telegram.request import HTTPXRequest
+    timeouts = _telegram_http_timeouts()
     try:
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         if not proxy:
-            return Bot(token=token)
-        from telegram.request import HTTPXRequest
-        logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
+            return Bot(token=token, request=HTTPXRequest(**timeouts))
+        logger.info("send_message: standalone Telegram send routed through proxy %s", _proxy_log_label(proxy))
+        return Bot(
+            token=token,
+            request=HTTPXRequest(proxy=proxy, **timeouts),
+            get_updates_request=HTTPXRequest(proxy=proxy, **timeouts),
+        )
     except Exception as proxy_err:
         logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
-    return Bot(token=token)
+    return Bot(token=token, request=HTTPXRequest(**timeouts))
+
+
+def _proxy_log_label(proxy):
+    """scheme://host:port of a proxy URL, without any user:password."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(proxy)
+    return f"{parts.scheme}://{parts.hostname}" + (f":{parts.port}" if parts.port else "")
 
 
 def _telegram_thread_kwargs(thread_id):

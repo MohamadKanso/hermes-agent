@@ -113,8 +113,8 @@ class TestSendTelegramStandaloneProxy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), Bot()
-        is constructed plainly — no ``request``/``get_updates_request``
-        kwargs, and HTTPXRequest is not invoked at all.
+        gets a proxy-less ``request`` (carrying the shared timeouts) and no
+        ``get_updates_request``.
         """
         from tools.send_message_tool import _send_telegram
 
@@ -156,7 +156,59 @@ class TestSendTelegramStandaloneProxy:
         call_args = bot_factory.call_args.args
         # token may be passed positionally or as a kwarg; either is fine.
         assert call_kwargs.get("token", call_args[0] if call_args else None) == "tok"
-        assert "request" not in call_kwargs
+        assert "request" in call_kwargs
         assert "get_updates_request" not in call_kwargs
-        httpx_request_factory.assert_not_called()
+        httpx_request_factory.assert_called_once()
+        assert "proxy" not in httpx_request_factory.call_args.kwargs
         bot.send_message.assert_awaited_once()
+
+
+class TestSendTelegramStandaloneTimeouts:
+    """The standalone lane must use the same HERMES_TELEGRAM_HTTP_* timeouts as the adapter."""
+
+    @staticmethod
+    def _run(monkeypatch: pytest.MonkeyPatch, proxy: str | None):
+        from tools.send_message_tool import _send_telegram
+
+        for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY",
+                    "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(var, raising=False)
+        if proxy:
+            monkeypatch.setenv("TELEGRAM_PROXY", proxy)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+
+        bot_factory = MagicMock(return_value=_make_bot())
+        httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+        _install_telegram_mock_with_request(monkeypatch, bot_factory, httpx_request_factory)
+        asyncio.run(_send_telegram("tok", "123", "hello"))
+        return httpx_request_factory
+
+    @pytest.mark.parametrize("proxy", [None, "http://127.0.0.1:7890"])
+    def test_env_timeouts_applied(self, monkeypatch: pytest.MonkeyPatch, proxy) -> None:
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", "21")
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", "22")
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", "23")
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", "24")
+        factory = self._run(monkeypatch, proxy)
+        assert factory.call_count >= 1
+        for call in factory.call_args_list:
+            assert call.kwargs["connect_timeout"] == 21.0
+            assert call.kwargs["read_timeout"] == 22.0
+            assert call.kwargs["write_timeout"] == 23.0
+            assert call.kwargs["pool_timeout"] == 24.0
+
+    @pytest.mark.parametrize("proxy", [None, "http://127.0.0.1:7890"])
+    def test_default_timeouts_match_adapter(self, monkeypatch: pytest.MonkeyPatch, proxy) -> None:
+        for name in ("CONNECT", "READ", "WRITE", "POOL"):
+            monkeypatch.delenv(f"HERMES_TELEGRAM_HTTP_{name}_TIMEOUT", raising=False)
+        factory = self._run(monkeypatch, proxy)
+        for call in factory.call_args_list:
+            assert (call.kwargs["connect_timeout"], call.kwargs["read_timeout"],
+                    call.kwargs["write_timeout"], call.kwargs["pool_timeout"]) == (10.0, 20.0, 20.0, 8.0)
+
+    def test_proxy_credentials_not_logged(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+        caplog.set_level("INFO", logger="tools.send_message_tool")
+        self._run(monkeypatch, "http://user:s3cret@127.0.0.1:7890")
+        assert "s3cret" not in caplog.text
+        assert "127.0.0.1:7890" in caplog.text
