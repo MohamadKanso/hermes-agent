@@ -723,7 +723,15 @@ interface UnionAgentRow {
    *  only source of a REMOTE row's title, since profiles.list is asked of the
    *  active gateway alone. */
   profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  /** False when the source lists the profile but does not serve it. */
+  reachable?: boolean
   targetProfile?: string
+}
+
+/** A source can be up and still not serve a profile it lists. Only an explicit
+ *  `reachable: false` says so: a native roster never sets the field. */
+function unservedFlag(agent: UnionAgentRow): Pick<RosterRow, 'unserved'> {
+  return agent.reachable === false ? { unserved: true } : {}
 }
 
 /** The union roster payload. `primaryConnectionId` is served by Electron but
@@ -847,9 +855,11 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
        * snapshot rather than clearing it. */
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
+
       const profiles = (merged?.profiles || []).map(row =>
         row?.remoteSource ? { ...row, sourceReachable: false } : row
       )
+
       await reconcileBotMeta(profiles, issuedAt)
 
       return {
@@ -1077,6 +1087,7 @@ export function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       }
       row.sourceScoped = true
+      Object.assign(row, unservedFlag(agent))
 
       continue
     }
@@ -1105,7 +1116,8 @@ export function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       },
       remoteSource: true,
-      sourceScoped: true
+      sourceScoped: true,
+      ...unservedFlag(agent)
     })
   }
 
@@ -1488,7 +1500,9 @@ export function sourceByConnection(sources: GatewaySource[] | null | undefined):
   )
 }
 
-/** Copy current source health onto a row without changing its owner. */
+/** Copy current source health onto a row without changing its owner. A row
+ *  its source lists but does not serve stays unreachable while the source is
+ *  up: the pane re-annotates rows before seating a first selection. */
 export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | null | undefined): RosterRow {
   const id = String(bot?.connectionId || '').trim()
 
@@ -1516,7 +1530,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
-    sourceReachable: source.reachable
+    sourceReachable: source.reachable && !bot.unserved
   }
 }
 
