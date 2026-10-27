@@ -9,6 +9,7 @@ function tool(toolName: string, args: Record<string, unknown> = {}, result?: unk
 const read = (path: string) => tool('read_file', { path }, { content: '' })
 const searched = (query: string) => tool('search_files', { query }, { hits: [] })
 const ran = (command: string) => tool('terminal', { command }, { exit_code: 0 })
+const pendingRun = (command: string) => tool('terminal', { command })
 // Fixtures carry the REAL tool schemas (tools/web_tools.py): web_search takes
 // `query`, web_extract takes `urls` (a list, up to five per call).
 const webSearched = (query: string) => tool('web_search', { query }, { success: true })
@@ -43,8 +44,19 @@ describe('summarizeToolRun', () => {
 
   it('puts the running category in the present tense and leaves the rest past', () => {
     expect(running([read('a.ts'), tool('read_file', { path: 'b.ts' }), ran('x'), ran('y')])).toBe(
-      'Exploring 2 files, ran 2 commands'
+      'Explored a.ts, exploring b.ts, ran 2 commands'
     )
+  })
+
+  // Terminal calls are sequential, so a long live run is many finished
+  // commands and at most one in flight — the header must not say all of them
+  // are running (#145748).
+  it('only counts calls still in flight in the present tense', () => {
+    const done = Array.from({ length: 22 }, (_, i) => ran(`cmd-${i}`))
+
+    expect(running([...done, pendingRun('npm test')])).toBe('Ran 22 commands, running npm test')
+    expect(running([...done, pendingRun('a'), pendingRun('b')])).toBe('Ran 22 commands, running 2 commands')
+    expect(running([ran('x'), pendingRun('npm test')])).toBe('Ran 1 command, running npm test')
   })
 
   it('names the command that is still running', () => {

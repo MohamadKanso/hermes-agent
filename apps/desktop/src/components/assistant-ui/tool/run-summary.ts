@@ -156,8 +156,23 @@ function toolTarget(tool: ToolCallLike): string {
  * ("Edited wiring.tsx"); anything else counts ("explored 3 files"). A settled
  * command is the exception — "ran 5 commands" is the useful reading, and a
  * command line only earns its space while it's the thing you're waiting on.
+ *
+ * A live category holding settled calls beside pending ones splits, so only the
+ * calls still in flight take the present tense ("Ran 22 commands, running 1
+ * command"). With nothing pending (the gap between sequential calls) the whole
+ * category keeps narrating, as the ticker underneath does.
  */
 function clause(category: RunCategory, tools: ToolCallLike[], live: boolean): string {
+  if (live) {
+    const pending = tools.filter(isPending)
+
+    if (pending.length > 0 && pending.length < tools.length) {
+      const settled = tools.filter(tool => !isPending(tool))
+
+      return `${clause(category, settled, false)}, ${lowerFirst(clause(category, pending, true))}`
+    }
+  }
+
   const copy = CATEGORY_COPY[category]
   const verb = live ? copy.present : copy.past
   const count = tools.reduce((sum, tool) => sum + unitCount(tool), 0)
