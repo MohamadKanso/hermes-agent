@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-27 21:15 utc | pr-upkeep | surveyed 40 open prs, no changes requested or failing ci or new feedback, no merges or closes in last 6h, #118489 still conflicts (main deleted host-backend-attach.ts and backend-discovery.test.ts, needs owner), nothing pushed or queued
 2026-10-27 18:15 utc | pr-upkeep | surveyed 40 open prs, only #132418 changed (own status comment, no reviews, no ci runs), no merges or closes in last 6h, nothing pushed or queued
 2026-10-27 15:30 utc | new-contribution | queued fix/145545-comfyui-timeout-hint for #145545 (timeout hint steered callers into a second submission), self-review 89, comfyui skill tests pass (new one fails without the fix), skipped #145530 (tracked in epic, design call) and #145564 (root cause unclear)
 2026-10-27 12:25 utc | pr-upkeep | surveyed 40 open prs, nothing updated since last run, no merges or closes in last 6h, nothing pushed or queued
