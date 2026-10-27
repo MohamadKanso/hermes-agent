@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-27 07:30 utc | new-contribution | queued fix/145412-telegram-standalone-timeouts for #145412 (standalone telegram lane ignored http timeouts), self-review 88, 17 related test files pass
 2026-10-27 06:20 utc | pr-upkeep | surveyed 40 open prs, only new activity is a third party test receipt on #134907 (no change asked), no merges or closes in last 6h, nothing pushed or queued
 2026-10-27 00:30 utc | pr-upkeep | surveyed 40 open prs, no reviews or failing ci or new feedback, only #118489 conflicts (main deleted host-backend-attach.ts, needs owner), nothing pushed or queued
 2026-10-26 23:20 utc | new-contribution | queued fix/145268-tui-checkpoint-limits for #145268 (desktop/tui ignored checkpoint limits), self-review 90, skipped #145275 (already fixed on main for native host) and #145257/#145263 (open prs)
