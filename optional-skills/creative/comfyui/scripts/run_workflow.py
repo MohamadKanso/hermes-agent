@@ -756,7 +756,15 @@ def main(argv: list[str] | None = None) -> int:
             "status": "timeout",
             "prompt_id": prompt_id,
             "elapsed": wait_result.get("elapsed"),
-            "hint": "Re-run with larger --timeout, or use --submit-only and check later.",
+            "hint": (
+                "Only the wait timed out: no cancel was sent, so the job may still be "
+                "queued or running on the server. Look it up with "
+                "`fetch_logs.py <prompt_id> --raw` using the same --host and the same "
+                f"--api-key or ${ENV_API_KEY} as this run. A local job that is still "
+                "queued or running is listed by `fetch_logs.py --tail-queue`, not in "
+                "history. Do not re-run this command just because the wait timed out, "
+                "that submits a new job."
+            ),
         })
         return 1
     if wait_result["status"] == "error":

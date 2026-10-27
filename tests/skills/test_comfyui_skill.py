@@ -6,6 +6,7 @@ contracts (locale-independent file reads), not snapshots of skill content.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -125,3 +126,42 @@ def test_load_schema_tolerates_utf8_bom(tmp_path):
         f"load_schema rejected a BOM-prefixed schema:\n{result.stderr}"
     )
     assert "SUCCESS" in result.stdout
+
+
+def test_wait_timeout_hint_does_not_point_at_a_second_submission(monkeypatch, capsys):
+    """The job is submitted once and never cancelled on timeout, so the hint must lead back
+    to that job instead of suggesting a re-run or --submit-only (both submit a new job)."""
+    monkeypatch.syspath_prepend(str(SCRIPTS))  # the scripts import their sibling _common
+    spec = importlib.util.spec_from_file_location("comfyui_run_workflow", SCRIPTS / "run_workflow.py")
+    run_workflow = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_workflow)
+
+    class _Runner:
+        submitted = 0
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def check_server(self):
+            return True, {}
+
+        def submit(self, _workflow):
+            type(self).submitted += 1
+            return {"prompt_id": "p-1", "node_errors": {}}
+
+        def poll_status(self, _prompt_id, timeout):
+            return {"status": "timeout", "elapsed": float(timeout)}
+
+    monkeypatch.setattr(run_workflow, "ComfyRunner", _Runner)
+    workflow = SCRIPTS.parent / "workflows" / "sd15_txt2img.json"
+    rc = run_workflow.main(["--workflow", str(workflow), "--timeout", "5"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["status"] == "timeout"
+    assert payload["prompt_id"] == "p-1"
+    assert _Runner.submitted == 1
+    hint = payload["hint"]
+    assert "fetch_logs.py" in hint and "--tail-queue" in hint
+    assert "--host" in hint and "--api-key" in hint
+    assert "--submit-only" not in hint and "larger --timeout" not in hint
