@@ -144,3 +144,42 @@ def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, c
         exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     assert exc.value.code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
     assert f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE}" in capsys.readouterr().err
+
+
+def _expire_claim(conn, tid: str) -> None:
+    conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (int(time.time()) - 3600, tid))
+    conn.commit()
+
+
+def test_expired_claim_of_rate_limited_worker_is_not_a_failure(kanban_home):
+    """A worker that exited 75 and whose claim expired before ``detect_crashed_workers`` ran is
+    booked ``rate_limited`` (cooldown, no failure count) instead of ``reclaimed`` (#145820)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        for _ in range(3):
+            _dead_worker_with_log(conn, tid, 4242, kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+            _expire_claim(conn, tid)
+            assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None, failure_limit=2) == 1
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["consecutive_failures"] == 0
+        outcomes = [r["outcome"] for r in conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id = ? ORDER BY id", (tid,),
+        )]
+        assert outcomes == ["rate_limited"] * 3
+        assert "gave_up" not in [e.kind for e in kb.list_events(conn, tid)]
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+
+def test_expired_claim_of_crashed_worker_still_counts_a_failure(kanban_home):
+    """Only the rate-limit exit is exempt: a dead worker with another exit code keeps the
+    #111306 breaker accounting on the expired-claim path."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_log(conn, tid, 4243, 1)
+        _expire_claim(conn, tid)
+        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None, failure_limit=2) == 1
+        row = conn.execute("SELECT consecutive_failures FROM tasks WHERE id = ?", (tid,)).fetchone()
+        assert row["consecutive_failures"] == 1

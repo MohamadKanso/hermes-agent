@@ -2363,10 +2363,27 @@ def release_stale_claims(
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - hb) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
-        if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
-                and not heartbeat_stale):
+        worker_alive = bool(
+            host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
+        )
+        if worker_alive and not heartbeat_stale:
             _extend_live_stale_claim(conn, row, now)
             continue
+
+        # A worker that already exited 75 met a quota wall, not a failure: settle it as
+        # ``detect_crashed_workers`` would have had the claim not expired first (#145820).
+        rate_limited = False
+        if host_local and row["worker_pid"] and not worker_alive:
+            from hermes_cli.kanban_db_dispatch import _classify_dead_worker_exit
+            from hermes_cli.kanban_owner_recovery import managed_run_exit_code
+
+            board = get_current_board()
+            dead = _classify_dead_worker_exit(
+                int(row["worker_pid"]), row["claim_lock"],
+                managed_run_exit_code(conn, row["id"], int(row["worker_pid"]), row["claim_lock"]),
+                task_id=row["id"], board=board,
+            )
+            rate_limited = dead.rate_limited
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
@@ -2407,18 +2424,27 @@ def release_stale_claims(
                     "host_local": host_local,
                     "heartbeat_stale": bool(heartbeat_stale),
                     "retry_status": retry_status,
+                    "rate_limited": rate_limited,
                 },
+                outcome="rate_limited" if rate_limited else "reclaimed",
             )
+            if rate_limited:
+                # No failure count, and the ``rate_limited`` outcome starts the respawn cooldown.
+                conn.execute(
+                    "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                    (dead.error_text[:500], row["id"]),
+                )
             reclaimed += 1
-        # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
-        # the run ended without a verdict, so it counts toward the breaker and a
-        # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
-        _record_task_failure(
-            conn, row["id"], f"stale_lock={row['claim_lock']}",
-            outcome="reclaimed", failure_limit=failure_limit,
-            release_claim=False, end_run=False,
-            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
-        )
+        if not rate_limited:
+            # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
+            # the run ended without a verdict, so it counts toward the breaker and a
+            # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
+            _record_task_failure(
+                conn, row["id"], f"stale_lock={row['claim_lock']}",
+                outcome="reclaimed", failure_limit=failure_limit,
+                release_claim=False, end_run=False,
+                event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+            )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(
@@ -2431,11 +2457,12 @@ def release_stale_claims(
 
 def _record_reclaim(
     conn: sqlite3.Connection, task_id: str, termination: dict, *, error: str, payload: dict,
+    outcome: str = "reclaimed",
 ) -> Optional[int]:
-    """Close the active run as ``reclaimed`` and emit the ``reclaimed`` event
+    """Close the active run as ``outcome`` and emit the ``reclaimed`` event
     (payload merged with the termination report). Caller holds the txn."""
     run_id = _end_run(
-        conn, task_id, outcome="reclaimed", status="reclaimed", error=error, metadata=termination,
+        conn, task_id, outcome=outcome, status=outcome, error=error, metadata=termination,
     )
     payload.update(termination)
     _append_event(conn, task_id, "reclaimed", payload, run_id=run_id)
