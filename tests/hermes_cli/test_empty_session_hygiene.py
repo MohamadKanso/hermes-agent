@@ -114,3 +114,49 @@ class TestCLIDiscardSessionIfEmpty:
         cli.conversation_history = [{"role": "user", "content": "hello"}]
         assert cli._discard_session_if_empty("unflushed") is False
         assert db.get_session("unflushed") is not None
+
+
+class TestEndCurrentSessionPrune:
+    """/resume and /branch end the row they leave via ``_end_current_session``."""
+
+    def _make_cli(self, db, session_id):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._session_db = db
+        cli.session_id = session_id
+        cli.conversation_history = []
+        cli.agent = None
+        return cli
+
+    def test_switch_before_first_message_drops_the_row(self, db):
+        from hermes_cli.cli_session_switch import _end_current_session
+
+        db.create_session(session_id="fresh", source="cli", model="test")
+        cli = self._make_cli(db, "fresh")
+
+        _end_current_session(cli, "resumed_other")
+
+        assert db.get_session("fresh") is None
+
+    def test_switch_keeps_a_row_with_messages(self, db):
+        from hermes_cli.cli_session_switch import _end_current_session
+
+        db.create_session(session_id="busy", source="cli", model="test")
+        db.append_message("busy", role="user", content="hello")
+        cli = self._make_cli(db, "busy")
+
+        _end_current_session(cli, "resumed_other")
+
+        assert db.get_session("busy")["end_reason"] == "resumed_other"
+
+    def test_switch_keeps_a_row_whose_flush_has_not_landed(self, db):
+        from hermes_cli.cli_session_switch import _end_current_session
+
+        db.create_session(session_id="unflushed", source="cli", model="test")
+        cli = self._make_cli(db, "unflushed")
+        cli.conversation_history = [{"role": "user", "content": "hello"}]
+
+        _end_current_session(cli, "branched")
+
+        assert db.get_session("unflushed") is not None

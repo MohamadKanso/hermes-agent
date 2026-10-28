@@ -9,14 +9,18 @@ from contextlib import suppress
 
 
 def _end_current_session(cli, reason: str) -> None:
-    """Flush un-persisted messages, then end the current session row with ``reason``.
-    Best-effort on both steps (the switch proceeds even if the DB write fails)."""
+    """Flush un-persisted messages, end the current session row with ``reason``, then prune it
+    if it never gained content. Best-effort on every step (the switch proceeds even if the DB
+    write fails). Must run before the caller swaps ``session_id``/``conversation_history``:
+    the prune probes the row being left and trusts the in-memory transcript."""
     if cli.agent:
         with suppress(Exception):
             cli.agent._flush_messages_to_session_db(
                 cli.conversation_history, conversation_history=cli.conversation_history)
     with suppress(Exception):
         cli._session_db.end_session(cli.session_id, reason)
+    with suppress(Exception):
+        cli._discard_session_if_empty(cli.session_id)
 
 
 def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:

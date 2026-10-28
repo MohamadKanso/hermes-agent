@@ -272,6 +272,8 @@ class TestResumeOpensTheTargetOnTheGateway:
         store._reader.get_session.return_value = {"id": "target", "title": "T"}
         store._reader.resolve_resume_session_id.return_value = "target"
         store._reader.get_resume_conversations.return_value = ([], [])
+        # the old session already has content, so the switch leaves its row alone
+        store._reader._read_ctx.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = None
         store.attach("current_session")
         calls.clear()
         cli_obj = _make_cli()
