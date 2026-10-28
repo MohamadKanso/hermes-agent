@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-28 19:21 utc | outbox poster | pr create refused for fix/145268-tui-checkpoint-limits: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);marked #132420 ready
 2026-10-28 19:25 utc | new-contribution | queued fix/146165-cli-switch-prune-empty-session for #146165 (/resume and /branch left an empty session row behind), self-review 90, session hygiene, resume, branch, new session and exit tests pass (new one fails without the fix), 6 prs waiting
 2026-10-28 18:20 utc | pr-upkeep | 40 open prs, none with changes requested or failing checks, no conflict states seen, queued ready for draft 132420, 135467 flagged as a bot-labelled dup of 135466 but left alone
 2026-10-28 15:35 utc | new-contribution | queued fix/146059-numbered-env-resave for #146059 (re-saving a removed VAR_2 env key stayed suppressed), self-review 90, credential lifecycle and dashboard admin tests pass (new one fails without the fix), skipped #146016 (#146038 open), 5 prs waiting
