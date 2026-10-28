@@ -8,9 +8,6 @@ One per line, exactly one of:
 - `pr | <branch> | <issue number or -> | <pr title>` (body in `bodies/<branch with / replaced by __>.md`)
 The poster removes a line once it is done.
 
-pr | docs/144424-in-place-compaction-lineage | #144424 | docs(sessions): describe in-place compaction as the default lineage behavior
 pr | fix/145268-tui-checkpoint-limits | #145268 | fix(tui-gateway): pass checkpoint size and count limits from config to desktop and tui agents
-pr | fix/145412-telegram-standalone-timeouts | #145412 | fix(send-message): apply telegram http timeouts to the standalone send lane
 pr | fix/145545-comfyui-timeout-hint | #145545 | fix(comfyui): point the wait-timeout hint back at the submitted job
-pr | fix/145748-desktop-run-header-live-count | #145748 | fix(desktop): only count in-flight calls in the present tense of the tool-run header
 pr | fix/145820-reclaim-rate-limited-exit | #145820 | fix(kanban): book an expired claim of a rate-limited worker as rate_limited
