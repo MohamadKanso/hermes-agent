@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-28 00:10 utc | pr-upkeep | surveyed 40 open prs, nothing updated since last run (newest activity 10-27 16:23), no merges or closes in last 6h, #118489 still needs owner, nothing pushed or queued
 2026-10-27 23:25 utc | new-contribution | queued fix/145748-desktop-run-header-live-count for #145748 (live tool-run header said running N commands for finished calls), self-review 88, desktop tool and chat-messages vitest suites pass (new test fails without the fix), skipped #145664/#145703/#145704/#145683/#145698 (claimed or open prs) and #145666 (code removed from main)
 2026-10-27 21:15 utc | pr-upkeep | surveyed 40 open prs, no changes requested or failing ci or new feedback, no merges or closes in last 6h, #118489 still conflicts (main deleted host-backend-attach.ts and backend-discovery.test.ts, needs owner), nothing pushed or queued
 2026-10-27 18:15 utc | pr-upkeep | surveyed 40 open prs, only #132418 changed (own status comment, no reviews, no ci runs), no merges or closes in last 6h, nothing pushed or queued
