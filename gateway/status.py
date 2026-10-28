@@ -1093,7 +1093,7 @@ def _prepare_runtime_status_update(
     parked_profiles: Any = _UNSET, multiplex_standalone_reason: Any = _UNSET,
     platform_metrics: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
-    drop_profile_platforms: Optional[str] = None,
+    drop_profile_platforms: Optional[str] = None, retain_profile_platforms: Optional[set[str]] = None,
     load_existing: bool = True, reload_existing: bool = False,
 ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     """Merge one update into the process-wide canonical status snapshot."""
@@ -1113,12 +1113,9 @@ def _prepare_runtime_status_update(
         if not isinstance(payload["platforms"], dict):
             payload["platforms"] = {}
         if clear_profile_platforms or drop_profile_platforms:
-            drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
-            payload["platforms"] = {
-                k: v for k, v in payload["platforms"].items()
-                if not isinstance(k, str) or ":" not in k
-                or (drop_prefix is not None and not k.startswith(drop_prefix))
-            }
+            from gateway.status_platforms import prune_profile_platforms
+            payload["platforms"] = prune_profile_platforms(
+                payload["platforms"], drop_profile_platforms, retain_profile_platforms)
         payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
         payload["updated_at"] = _utc_now_iso()
         payload.update(_get_code_identity_fields())

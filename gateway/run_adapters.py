@@ -1257,6 +1257,8 @@ class GatewayAdapterLifecycleMixin:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
+        from gateway.status_platforms import retire_secondary_platform_status
+        retire_secondary_platform_status(self, profile_name, profile_home, profile_cfg)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.
         configs = getattr(self, "_profile_configs", None)
