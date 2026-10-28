@@ -125,3 +125,17 @@ def test_load_schema_tolerates_utf8_bom(tmp_path):
         f"load_schema rejected a BOM-prefixed schema:\n{result.stderr}"
     )
     assert "SUCCESS" in result.stdout
+
+
+def test_ws_monitor_timeout_help_describes_idle_timeout():
+    # --timeout feeds create_connection/settimeout and the recv loop has no
+    # total deadline, so the help must not promise a cap on monitor duration.
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "ws_monitor.py"), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    help_text = " ".join(result.stdout.split())
+    assert "Idle socket timeout" in help_text
+    assert "Hard cap" not in help_text
