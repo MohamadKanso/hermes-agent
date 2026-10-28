@@ -13,3 +13,4 @@ pr | fix/145268-tui-checkpoint-limits | #145268 | fix(tui-gateway): pass checkpo
 pr | fix/145412-telegram-standalone-timeouts | #145412 | fix(send-message): apply telegram http timeouts to the standalone send lane
 pr | fix/145545-comfyui-timeout-hint | #145545 | fix(comfyui): point the wait-timeout hint back at the submitted job
 pr | fix/145748-desktop-run-header-live-count | #145748 | fix(desktop): only count in-flight calls in the present tense of the tool-run header
+pr | fix/145820-reclaim-rate-limited-exit | #145820 | fix(kanban): book an expired claim of a rate-limited worker as rate_limited
