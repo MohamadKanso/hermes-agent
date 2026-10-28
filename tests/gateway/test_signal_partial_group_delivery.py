@@ -7,8 +7,8 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.helpers import redact_phone
-from gateway.platforms.signal import SignalAdapter
-from gateway.platforms.signal_rate_limit import _reset_scheduler
+from plugins.platforms.signal.adapter import SignalAdapter
+from plugins.platforms.signal.signal_rate_limit import _reset_scheduler
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +42,7 @@ async def test_partial_group_delivery_is_not_resent(send_kind, failure_type, suc
     adapter = SignalAdapter(PlatformConfig(extra={"account": "+15550000000"}))
     image = tmp_path / "image.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
-    with caplog.at_level(logging.WARNING, logger="gateway.platforms.signal"):
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.signal.adapter"):
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             adapter.client = client
             if send_kind == "text":
