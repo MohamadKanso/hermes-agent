@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-28 06:15 utc | pr-upkeep | surveyed 40 open prs, newest activity still 10-27 16:23, no merges or closes in last 3h, nothing pushed or queued
 2026-10-28 03:35 utc | new-contribution | queued fix/145820-reclaim-rate-limited-exit for #145820 (expired claim of a worker that exited 75 counted as a failure and blocked the card), self-review 88, kanban exit trailer tests pass (new one fails without the fix) and 30 kanban failures are identical on clean main, skipped #145816 (needs a ranking design call)
 2026-10-28 03:10 utc | pr-upkeep | surveyed 40 open prs, no activity since 10-27 16:23, no merges or closes in last 3h, nothing pushed or queued
 
