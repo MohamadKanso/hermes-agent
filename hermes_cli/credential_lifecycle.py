@@ -9,6 +9,7 @@ provider credential should route through :func:`save_provider_env_credential` /
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 __all__ = [
@@ -18,8 +19,19 @@ __all__ = [
 ]
 
 
-def _providers_for_env_var(env_var: str) -> list[str]:
-    """Provider ids whose registered api_key_env_vars include ``env_var``."""
+_NUMBERED_SIBLING = re.compile(r"^(?P<base>.+)_(?P<n>\d+)$")
+
+
+def _providers_for_env_var(env_var: str, *, numbered: bool = False) -> list[str]:
+    """Provider ids whose registered api_key_env_vars include ``env_var``.
+
+    With ``numbered`` a rotation sibling (``VAR_2``, ``VAR_3``, ...) resolves to the providers
+    that own ``VAR``, mirroring ``_env_key_var_candidates`` in ``agent/credential_pool.py``.
+    """
+    names = {env_var}
+    sibling = _NUMBERED_SIBLING.match(env_var) if numbered else None
+    if sibling and int(sibling["n"]) >= 2:
+        names.add(sibling["base"])
     try:
         from hermes_cli.auth_plugin_providers import canonical_registry_rows
         rows = canonical_registry_rows()
@@ -28,7 +40,7 @@ def _providers_for_env_var(env_var: str) -> list[str]:
     hits: list[str] = []
     for pid, cfg in rows:
         try:
-            if env_var in (cfg.api_key_env_vars or ()):
+            if names.intersection(cfg.api_key_env_vars or ()):
                 hits.append(pid)
         except Exception:
             continue
@@ -192,7 +204,7 @@ def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
         config_updates = _scrub_config_yaml_mirrors(old_value, value)
 
     # A prior removal may have suppressed this env source; a fresh save is an explicit re-add.
-    providers = _providers_for_env_var(env_var)
+    providers = _providers_for_env_var(env_var, numbered=True)
     _for_each_provider(providers, "hermes_cli.auth.unsuppress_credential_source", f"env:{env_var}")
 
     # ``load_pool`` is idempotent and additive-only for env sources, so re-running is safe even when

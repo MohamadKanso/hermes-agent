@@ -229,6 +229,31 @@ def test_put_api_env_materializes_credential_pool_entry(hermes_home):
 
 
 
+def test_resave_removed_numbered_env_key_is_used_again(hermes_home):
+    """A removed ``VAR_2`` sibling must come back when it is saved again (#146059)."""
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import is_source_suppressed
+
+    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
+    source = "env:ZAI_API_KEY_2"
+
+    for method, payload in (
+        ("put", {"key": "ZAI_API_KEY_2", "value": NEW_KEY}),
+        ("request", {"key": "ZAI_API_KEY_2"}),
+        ("put", {"key": "ZAI_API_KEY_2", "value": NEW_KEY}),
+    ):
+        if method == "request":
+            resp = client.request("DELETE", "/api/env", json=payload, headers=HEADERS)
+            assert resp.status_code == 200, resp.text
+            assert is_source_suppressed("zai", source)
+        else:
+            resp = client.put("/api/env", json=payload, headers=HEADERS)
+            assert resp.status_code == 200, resp.text
+
+    assert not is_source_suppressed("zai", source)
+    assert source in [e.source for e in load_pool("zai").entries()]
+
+
 
 # ---------------------------------------------------------------------------
 # Keyed `providers` schema (v12+) — where the dashboard writes custom
