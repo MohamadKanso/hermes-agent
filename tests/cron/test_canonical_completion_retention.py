@@ -24,3 +24,14 @@ def test_completion_ids_retire_with_their_journal(tmp_path, monkeypatch):
         # The still-journaled completion replayed by recovery is a no-op, not a second run.
         assert jobs.mark_job_run(job_id, True, execution_id='pending') is True
         assert jobs.get_job(job_id)['repeat']['completed'] == completed
+
+
+def test_null_completions_record_still_books_the_run(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job_id = jobs.create_job(prompt='report', schedule='every 1m', deliver='local')['id']
+        stored = jobs.load_jobs()
+        stored[0]['canonical_completions'] = None  # key present, value null
+        jobs.save_jobs(stored)
+        assert jobs.mark_job_run(job_id, True, execution_id='run-1') is True
+        assert jobs.get_job(job_id)['canonical_completions'] == ['run-1']
