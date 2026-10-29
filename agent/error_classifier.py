@@ -1071,10 +1071,22 @@ def _off_route_host(c: _Ctx) -> str:
 # default so the configured retry budget applies and no credential is benched.
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
+# A 403 whose structured ``type`` says permission was refused for permission, not money.
+# Gateways reuse a billing ``code`` on it (OmniRoute answers a combo allow-list denial with
+# ``type: permission_error, code: insufficient_quota``), and the serialized body lands in
+# ``c.msg``, so the code alone would match ``_BILLING_PATTERNS`` and rotate healthy credentials.
+_403_PERMISSION_REFUSAL_TYPES = frozenset({"permission_error", "permission_denied"})
+
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
         return _V_OVERLOADED
+    # Permission stays permission unless the prose itself names a billing quantity, so a
+    # genuine quota 403 still reads as billing below.
+    err = _error_obj(c.body)
+    if str(err.get("type") or "").strip().lower() in _403_PERMISSION_REFUSAL_TYPES:
+        if not any(p in str(err.get("message") or "").lower() for p in _BILLING_PATTERNS):
+            return _V_POLICY_BLOCKED
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)

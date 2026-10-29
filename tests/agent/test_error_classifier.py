@@ -180,6 +180,24 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_403_permission_error_with_billing_code_is_policy_blocked(self):
+        """A 403 whose body says ``type=permission_error`` was refused for permission, even when
+        the gateway stamps a billing-shaped ``code`` on it: no top-up copy, no credential rotation."""
+        body = {"error": {"message": 'Combo "deepseek-flash-alpha" is not allowed for this API key',
+                          "type": "permission_error", "code": "insufficient_quota"}}
+        err = MockAPIError(f"Error code: 403 - {body}", status_code=403, body=body)
+        result = classify_api_error(err, provider="custom")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+
+    def test_403_permission_error_naming_a_quota_stays_billing(self):
+        body = {"error": {"message": "You exceeded your current quota, please check your plan and billing details",
+                          "type": "permission_error", "code": "insufficient_quota"}}
+        err = MockAPIError(f"Error code: 403 - {body}", status_code=403, body=body)
+        result = classify_api_error(err, provider="custom")
+        assert result.reason == FailoverReason.billing
+
 
 
 
