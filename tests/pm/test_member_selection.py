@@ -149,3 +149,28 @@ def test_buildable_member_without_a_version_gets_one_and_keeps_its_name(tmp_path
     member = _workspace_member(plugin, root, identity=plugin)
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project == {"name": "noversion-plugin", "version": "0.0.0"}
+
+
+def test_member_drops_dependency_groups(tmp_path):
+    """Hermes only installs a member's [project].dependencies. A dev-only
+    [dependency-groups] table that names the workspace root (honcho pins
+    ``hermes-agent`` for its tests) makes uv refuse to lock the whole workspace,
+    so the generated member must not carry it."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "honcho"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-plugin-honcho"\nversion = "1.0.0"\ndependencies = ["honcho-ai"]\n'
+        '[dependency-groups]\ntest = ["hermes-agent @ git+https://example.invalid/hermes-agent@abc", "pytest"]\n'
+        '[tool.uv]\npackage = false\ndefault-groups = ["test"]\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "dependency-groups" not in document
+    assert "default-groups" not in document["tool"]["uv"]
+    assert document["project"]["dependencies"] == ["honcho-ai"]

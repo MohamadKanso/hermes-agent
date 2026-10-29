@@ -316,6 +316,13 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         changed = declaration.install_requirements != declaration.requirements
         if changed:
             document["project"]["dependencies"] = list(declaration.install_requirements)
+        # Hermes only installs [project].dependencies from a member. Dependency groups are
+        # the plugin's own dev tooling, and uv validates them for every workspace member:
+        # one naming the root (`hermes-agent`) or conflicting with core fails `uv lock` for
+        # all plugins. `default-groups` would then point at groups that no longer exist.
+        if document.pop("dependency-groups", None) is not None:
+            document.get("tool", {}).get("uv", {}).pop("default-groups", None)
+            changed = True
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:
