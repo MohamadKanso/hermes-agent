@@ -323,7 +323,7 @@ def _discover_repos_payload(
 
 # Automation sources are not user conversations, even without a parent session.
 # include_children=False separately hides delegate/compression lineage children.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", "subagent", "tool"]
+_PROJECT_TREE_EXCLUDED_SOURCES = ["acp", "cron", "kanban", "oneshot", "subagent", "tool"]
 
 
 def _project_tree_row(r: dict) -> dict:

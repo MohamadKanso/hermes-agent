@@ -565,7 +565,7 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
         db.close()
 
 
-@pytest.mark.parametrize("source", ["tool", "subagent"])
+@pytest.mark.parametrize("source", ["acp", "tool", "subagent"])
 def test_project_tree_hides_automation_before_applying_session_limit(
     monkeypatch, tmp_path, source
 ):
@@ -790,7 +790,7 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (coder_home / "projects.db").exists()
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
-@pytest.mark.parametrize("source", ["tool", "subagent", "cron", "kanban", "oneshot"])
+@pytest.mark.parametrize("source", ["acp", "tool", "subagent", "cron", "kanban", "oneshot"])
 def test_project_tree_discovery_counts_only_visible_sources(
     monkeypatch, tmp_path, source, _fast_git_probe
 ):
