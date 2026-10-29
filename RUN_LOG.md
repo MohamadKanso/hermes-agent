@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-29 16:24 utc | outbox poster | pr create refused for fix/145268-tui-checkpoint-limits: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);marked #134756 ready
 2026-10-29 15:50 utc | pr-upkeep | 38 open prs, no new reviews or failing ci, 134756 got a last review nit (acp) already answered by the owner so queued ready for it, no merges or closes in last 3h besides the 2 queued closes, nothing pushed
 2026-10-29 15:45 utc | new-fix | picked #146519 (null canonical_completions crashes mark_job_run, job refires every minute), pushed fix/146519-canonical-completions-null with test, pr queued, 6 in outbox
 2026-10-29 13:22 utc | outbox poster | pr create refused for fix/145268-tui-checkpoint-limits: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);closed #131647;closed #118489
