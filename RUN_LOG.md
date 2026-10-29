@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-29 21:15 utc | pr-upkeep | 38 open prs, only activity is a third party test report on 131607 (no change asked), no changes requested, no new failing ci, no merges or closes in last 3h, nothing pushed or queued
 2026-10-29 19:10 utc | new-fix | outbox had 6 unopened prs so no new fix, dropped 146519 (claimed by upstream 146554), 5 left queued, other 5 issues still open and unclaimed, merge check skipped because the checkout is shallow and poster is still blocked on createpullrequest permission
 
 2026-10-29 18:12 utc | pr-upkeep | 38 open prs, no changes requested, no failing ci, no new reviews since last run, no merges or closes in last 3h, nothing pushed or queued
