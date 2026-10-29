@@ -2,6 +2,7 @@
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
 
+2026-10-29 13:22 utc | outbox poster | pr create refused for fix/145268-tui-checkpoint-limits: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);closed #131647;closed #118489
 2026-10-29 11:15 utc | new-fix | picked #146435 (plugin update fails on dependency-groups naming hermes-agent), pushed fix/146435-plugin-dependency-groups with test, pr queued, 5 in outbox
 2026-10-29 12:40 utc | pr-upkeep | queued closes for 131647 and 118489, both superseded by landed main commits
 2026-10-29 12:20 utc | pr-upkeep | 40 open prs, no new reviews or ci failures, merged main into the a2a ssrf branch (131646) and pushed, left 131647 and 118489 alone since main reworked those areas, nothing queued
