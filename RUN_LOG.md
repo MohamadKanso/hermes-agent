@@ -1,6 +1,7 @@
 # run log
 
 Newest first. Each automated run adds one line: `YYYY-MM-DD HH:MM utc | routine | what happened`
+2026-10-30 23:05 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 146649) still open and unassigned, merge check not possible (shallow checkout, poster still blocked), nothing pushed
 2026-10-30 21:15 utc | pr-upkeep | 37 open prs, all mergeable with no conflicts, none failing ci or with changes requested, 134756 and 131607 feedback already handled, linked issues of drafts still open, nothing merged in the last 3h, nothing pushed or queued
 2026-10-30 19:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues still open and unassigned with no pr claiming them, merge check not possible (shallow checkout has no merge base with upstream, poster still blocked), nothing pushed
 2026-10-30 18:15 utc | pr-upkeep | 38 open prs, none failing ci or with changes requested, 134756 and 131607 feedback already handled or just a test receipt, nothing merged in the last 3h, nothing pushed or queued
