@@ -1,5 +1,6 @@
 # run log
 
+2026-11-01 06:10 utc | pr-upkeep | 38 open prs, none updated since 2026-10-29 19:51, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-01 03:10 utc | pr-upkeep | 38 open prs, none failing ci or with changes requested, no conflicts (all blocked on review only), no new human comments since the last answered ones, no linked issue closed, 135467 still a draft duplicate of open draft 135466 by someone else (triage note only, not superseded), 131702 drafts left for the owner, nothing merged or closed in the last 3h, nothing pushed or queued
 2026-11-01 00:15 utc | pr-upkeep | 38 open prs, none updated since 2026-10-29 19:51, none conflicting, none closed or merged in the last 3h, nothing pushed or queued
 2026-10-31 19:15 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 146649) still open and unclaimed, merge check inconclusive (shallow checkout has no merge base for most branches, 146649 clean), nothing pushed
