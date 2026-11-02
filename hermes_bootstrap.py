@@ -608,15 +608,26 @@ if not _pm_repair:
         print(f"hermes: source-update completion failed: {exc}; "
               "running with the previous dependencies — run `hermes update` to finish it",
               file=sys.stderr)
+    _startup_step = "startup recovery"
     try:
         recover_if_needed(_root)
+        _startup_step = "dependency activation"
         activate_dependencies(_root)
     except (RuntimeError, OSError) as exc:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
             print(f"hermes: {message}", file=sys.stderr)
             raise SystemExit(1) from None
         if command_argv(sys.argv[1:])[:1] != ["pm"]:
-            print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+            if isinstance(exc, OSError) and exc.filename is None:
+                # No path in the error means a cwd-dependent call failed, which a dependency rebuild will not fix.
+                remedy = "no file was named, the process may have started in a directory that no longer exists"
+            else:
+                remedy = "run `hermes pm repair`"
+            print(f"hermes: {_startup_step} failed: {exc}; {remedy}", file=sys.stderr)
+            if os.environ.get("HERMES_BOOTSTRAP_DEBUG"):
+                import traceback
+
+                traceback.print_exc()
             raise SystemExit(1) from None
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()

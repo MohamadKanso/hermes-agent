@@ -219,3 +219,31 @@ def test_invalid_selected_environment_never_silently_falls_back(tmp_path, monkey
     }))
     with pytest.raises(RuntimeError, match="environment"):
         runtime_paths.selected_venv(root)
+
+
+@pytest.mark.parametrize("error,named,advice", [
+    ("OSError(2, 'No such file or directory')", "dependency activation failed", "no longer exists"),
+    ("OSError(2, 'No such file or directory', '/gone/site-packages')", "/gone/site-packages", "hermes pm repair"),
+    ("RuntimeError('no site-packages')", "dependency activation failed", "hermes pm repair"),
+])
+def test_boot_failure_names_the_step_and_only_blames_dependencies_when_they_are_at_fault(
+        tmp_path, monkeypatch, error, named, advice):
+    import os
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys; sys.argv = ['hermes', 'chat']; import pm.environments as env; "
+        f"env.activate_dependencies = lambda root: (_ for _ in ()).throw({error}); "
+        "import hermes_bootstrap"
+    )
+    result = subprocess.run([sys.executable, "-c", code], cwd=repo, env={**os.environ, "PYTHONPATH": str(repo)},
+                            capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 1, result.stderr
+    assert named in result.stderr
+    assert advice in result.stderr
+    if advice != "hermes pm repair":
+        assert "hermes pm repair" not in result.stderr
+    assert "Traceback" not in result.stderr
