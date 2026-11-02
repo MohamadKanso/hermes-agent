@@ -1,5 +1,6 @@
 # run log
 
+2026-11-02 06:15 utc | pr-upkeep | 38 open prs, none updated since 2026-10-29 19:51, no new reviews or conflicts, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-02 03:45 utc | new-fix | picked 147781 (pm repair message hid the real cause), pushed fix/147781-bootstrap-failure-context to fork with a test failing before and passing after, queued pr, 5 tests in test_startup_recovery also fail on main in this env so not from the change
 2026-11-02 03:10 utc | pr-upkeep | 38 open prs, none updated since 2026-10-29 19:51, no new reviews or conflicts, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-02 00:15 utc | pr-upkeep | 38 open prs, none updated since 2026-10-29 19:51, no reviews or conflicts to act on, none closed or merged in the last 3h, nothing pushed or queued
