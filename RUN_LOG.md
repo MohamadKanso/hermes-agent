@@ -1,5 +1,6 @@
 # run log
 
+2026-11-02 23:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, 145268 still open and unassigned (others checked earlier today), poster still blocked, merge check skipped since fetching full branches times out here, nothing pushed to fork
 2026-11-02 19:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned, merge check inconclusive (shallow checkout, unshallow fetch fails with bad pack header), poster still blocked, nothing pushed to fork
 2026-11-02 18:20 utc | pr-upkeep | 30 open prs seen (api rate limit hit mid-run), none updated since 2026-10-29 19:51, no reviews or changes requested, no conflicts (blocked on review only), ci pending on drafts, 135467 still a draft duplicate of open 135466 (triage note only), none closed or merged in the last 3h, nothing pushed or queued
 2026-11-02 16:20 utc | pr-upkeep | 38 open prs, none updated since 2026-10-29 19:51, all blocked on review only with no conflicts, no new reviews or changes requested, none closed or merged in the last 3h, nothing pushed or queued
