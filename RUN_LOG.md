@@ -1,5 +1,6 @@
 # run log
 
+2026-11-03 18:10 utc | pr-upkeep | 38 open prs, none dirty or failing and no changes requested, no linked issues closed, no human comments newer than the latest commits, drafts (135467 135224 133218 132427 131702 130376) left alone since no ci ran on them and nothing could be test-verified here, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-03 12:20 utc | pr-upkeep | 38 open prs, none dirty or with changes requested, no linked issues closed, no new human comments since last run, no ci reported on any head, drafts (135467 135224 133218 132427 131702 130376) left alone since nothing could be test-verified here and 135467 is flagged duplicate of 135466, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-03 15:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no closing prs, merge check skipped (shallow checkout), poster still blocked, nothing pushed to fork
 2026-11-03 11:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no linked prs, merge check skipped (only a shallow upstream checkout here), poster still blocked, nothing pushed to fork
