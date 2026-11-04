@@ -257,14 +257,42 @@ def _repo_node(root: str, label: str) -> dict:
     return {"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}
 
 
-def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
+def _declared_folder(cwd: str, folders: list[dict]) -> str:
+    target = _comparison_segments(cwd)
+    matches = [(_comparison_segments(_field(folder, "path")), _field(folder, "path"))
+               for folder in folders]
+    return max((path for parts, path in matches if parts and target[:len(parts)] == parts),
+               key=lambda path: len(_comparison_segments(path)), default="")
+
+
+def _build_repos(
+        sessions: list[dict], resolve: Optional[Resolve], hydrate: bool,
+        folders: Optional[list[dict]] = None) -> list[dict]:
     """Build the ``repo -> lane -> sessions`` subtree for a set of sessions."""
-    lanes: dict[str, tuple[dict, dict]] = {}  # lane identity -> (group, placement)
+    lanes: dict[tuple[str, str], tuple[dict, dict]] = {}
     for session in sessions:
         placement = _place_session(session, resolve)
         if not placement:
             continue
-        lane_identity = _lane_key(placement["lane_key"])
+        folder = _declared_folder(_field(session, "cwd"), folders or [])
+        folder_parts = _comparison_segments(folder)
+        repo_parts = _comparison_segments(placement["repo_key"])
+        if (placement["is_git"] and len(repo_parts) > len(folder_parts)
+                and repo_parts[:len(folder_parts)] == folder_parts):
+            folder = ""
+        if folder:
+            placement["repo_key"] = folder
+            placement["repo_label"] = base_name(folder) or folder
+            lane_parts = _comparison_segments(placement["lane_path"])
+            if (not placement["is_kanban"] and lane_parts
+                    and folder_parts[:len(lane_parts)] == lane_parts):
+                placement["is_main"] = True
+            if placement["is_main"]:
+                branch = _field(session, "git_branch") or DEFAULT_BRANCH_LABEL
+                placement["lane_key"] = _branch_lane_id(folder, branch)
+                placement["lane_label"] = branch
+                placement["lane_path"] = folder
+        lane_identity = (_path_key(placement["repo_key"]), _lane_key(placement["lane_key"]))
         if lane_identity not in lanes:
             group = dict(zip(_LANE_FIELDS, (placement[k] for k in _PLACEMENT_LANE_KEYS)))
             group["sessions"] = []
@@ -299,8 +327,7 @@ def _seed_folder_repos(
         raw = _field(folder, "path")
         if not raw:
             continue
-        info = resolve(raw) if resolve else None
-        root = (info or {}).get("repo_root") or raw.rstrip("/\\")
+        root = raw.rstrip("/\\") or raw
         root_key = _path_key(root)
         if not root_key or root_key in seen:
             continue
@@ -447,7 +474,7 @@ def build_tree(
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
         _scope(psessions)
-        repos = _build_repos(psessions, resolve, hydrate)
+        repos = _build_repos(psessions, resolve, hydrate, project.get("folders") or [])
         repos = _seed_folder_repos(repos, project.get("folders") or [], resolve)
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,

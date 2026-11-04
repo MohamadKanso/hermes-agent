@@ -474,6 +474,53 @@ def test_seeded_folder_repo_does_not_duplicate_a_session_derived_repo():
     assert [r["path"] for r in node["repos"]] == ["/www/app"]
 
 
+def test_declared_folders_in_same_repo_keep_separate_sessions():
+    project = _project("p", "vault", ["/vault/a", "/vault/b", "/vault/b/nested"])
+    resolve = lambda _cwd: {"repo_root": "/vault", "worktree_root": "/vault"}
+    a = _session("/vault/a/docs", branch="main")
+    b = _session("/vault/b/docs", branch="main")
+    nested = _session("/vault/b/nested/docs", branch="main")
+
+    for hydrate in (False, True):
+        node = pt.build_tree([project], [a, b, nested], [], resolve, hydrate=hydrate)["projects"][0]
+        repos = {repo["path"]: repo for repo in node["repos"]}
+        assert set(repos) == {"/vault/a", "/vault/b", "/vault/b/nested"}
+        assert all(repo["sessionCount"] == 1 for repo in repos.values())
+        if hydrate:
+            assert {path: repo["groups"][0]["sessions"][0]["id"] for path, repo in repos.items()} == {
+                "/vault/a": a["id"], "/vault/b": b["id"], "/vault/b/nested": nested["id"]}
+
+
+def test_empty_declared_folders_in_same_repo_stay_visible():
+    project = _project("p", "vault", ["/vault/a", "/vault/b"])
+    resolve = lambda _cwd: {"repo_root": "/vault", "worktree_root": "/vault"}
+    node = pt.build_tree([project], [], [], resolve, hydrate=True)["projects"][0]
+    assert {repo["path"] for repo in node["repos"]} == {"/vault/a", "/vault/b"}
+
+
+def test_declared_folder_preserves_nested_repo_and_non_git_lane():
+    project = _project("p", "work", ["/work"])
+    resolve = _resolver({"/work/app": ("/work/app", "/work/app")})
+    git = _session("/work/app", branch="main")
+    plain = _session("/work/notes")
+    node = pt.build_tree([project], [git, plain], [], resolve, hydrate=True)["projects"][0]
+    repos = {repo["path"]: repo for repo in node["repos"]}
+    assert repos["/work/app"]["groups"][0]["sessions"][0]["id"] == git["id"]
+    group = repos["/work"]["groups"][0]
+    assert (group["id"], group["label"], group["isGit"]) == ("/work::branch::main", "main", False)
+    assert group["sessions"][0]["id"] == plain["id"]
+
+
+def test_declared_folder_inside_linked_worktree_uses_its_checkout_lane():
+    project = _project("p", "feature", ["/repo-feature/sub"])
+    resolve = _resolver({"/repo-feature/sub": ("/repo", "/repo-feature")})
+    row = _session("/repo-feature/sub", branch="feature")
+    node = pt.build_tree([project], [row], [], resolve, hydrate=True)["projects"][0]
+    group = node["repos"][0]["groups"][0]
+    assert (group["id"], group["path"], group["label"], group["isMain"]) == (
+        "/repo-feature/sub::branch::feature", "/repo-feature/sub", "feature", True)
+
+
 def test_nested_project_folders_pick_the_deepest_match():
     # The folder index must resolve a session to its most-specific (deepest)
     # project folder, not just any ancestor.

@@ -114,6 +114,28 @@ describe('sortWorktreeGroups', () => {
 })
 
 describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
+  it('does not add sibling worktrees to a folder inside the checkout', () => {
+    const repo = { id: '/vault/a', path: '/vault/a', groups: [] }
+
+    const worktrees = [
+      { path: '/vault', isMain: true, branch: 'main' },
+      { path: '/vault-feature', isMain: false, branch: 'feature' }
+    ] as HermesGitWorktree[]
+
+    expect(mergeRepoWorktreeGroups(repo, worktrees).map(group => group.path)).toEqual(['/vault/a'])
+  })
+
+  it('uses the branch of the linked checkout containing the folder', () => {
+    const repo = { id: '/repo-feature/sub', path: '/repo-feature/sub', groups: [] }
+
+    const worktrees = [
+      { path: '/repo', isMain: true, branch: 'main' },
+      { path: '/repo-feature', isMain: false, branch: 'feature' }
+    ] as HermesGitWorktree[]
+
+    const groups = mergeRepoWorktreeGroups(repo, worktrees)
+    expect(groups.map(group => [group.label, group.path])).toEqual([['feature', '/repo-feature/sub']])
+  })
   it('injects a linked worktree lane discovered by git that has no sessions yet', () => {
     const repo = {
       id: '/repo',
@@ -1082,6 +1104,32 @@ describe('overlayLiveLanes', () => {
     const lane = overlaid.repos[0].groups.find(g => g.path === '/www/app-retry')
 
     expect(lane?.sessions.map(s => s.id)).toEqual(['fresh'])
+  })
+
+  it('places a live session only in the deepest folder and evicts its stale row', () => {
+    const stale = makeCwdSession('/vault/a', { id: 's', git_branch: 'main' })
+    const live = { ...stale, cwd: '/vault/a/nested/docs' }
+
+    const project = projectNode({
+      id: 'p',
+      repos: [
+        {
+          id: '/vault/a',
+          label: 'a',
+          path: '/vault/a',
+          sessionCount: 1,
+          groups: [
+            lane({ id: '/vault/a::branch::main', label: 'main', isMain: true, path: '/vault/a', sessions: [stale] })
+          ]
+        },
+        { id: '/vault/a/nested', label: 'nested', path: '/vault/a/nested', sessionCount: 0, groups: [] }
+      ]
+    })
+
+    const result = overlayLiveLanes(project, [live])
+    expect(result.repos[0].groups.flatMap(group => group.sessions)).toEqual([])
+    expect(result.repos[1].groups.flatMap(group => group.sessions).map(session => session.id)).toEqual(['s'])
+    expect(result.sessionCount).toBe(1)
   })
 
   it('evicts a deleted/archived snapshot row (and drops the lane once empty)', () => {

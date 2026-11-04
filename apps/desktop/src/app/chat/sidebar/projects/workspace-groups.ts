@@ -257,7 +257,12 @@ export function mergeRepoWorktreeGroups(
   // branch, defaulting to `main`. Known only when the local git probe ran;
   // remote backends keep the backend's recorded-branch main lane untouched.
   const mainWorktree = (discoveredWorktrees ?? []).find(w => w.isMain)
-  const homeBranch = mainWorktree && !mainWorktree.detached ? mainWorktree.branch?.trim() || DEFAULT_BRANCH_LABEL : ''
+
+  const checkout = (discoveredWorktrees ?? [])
+    .filter(worktree => repo.path && isPathUnder(worktree.path, repo.path))
+    .sort((a, b) => segments(b.path).length - segments(a.path).length)[0]
+
+  const homeBranch = checkout && !checkout.detached ? checkout.branch?.trim() || DEFAULT_BRANCH_LABEL : ''
 
   // Reconcile a LINKED worktree lane against git truth so its label AND path
   // describe the SAME worktree. Two repair directions:
@@ -356,7 +361,17 @@ export function mergeRepoWorktreeGroups(
     }
 
     // The home checkout is already the collapsed home lane (above).
-    if (worktree.isMain && homeBranch) {
+    if (checkout && pathKey(worktree.path) === pathKey(checkout.path) && homeBranch) {
+      continue
+    }
+
+    // A declared folder inside a checkout does not own all of its sibling worktrees.
+    if (
+      mainWorktree &&
+      repo.path &&
+      pathKey(mainWorktree.path) !== pathKey(repo.path) &&
+      !isPathUnder(repo.path, wtPath)
+    ) {
       continue
     }
 
@@ -947,8 +962,39 @@ export function overlayLiveLanes(
     return !owner || owner === project.id
   })
 
+  const destination = (session: SessionInfo): SidebarWorkspaceTree | undefined => {
+    const path = (session.cwd || session.git_repo_root || '').trim()
+    let best: SidebarWorkspaceTree | undefined
+    let depth = -1
+
+    for (const repo of project.repos) {
+      const candidates = [repo.path, ...repo.groups.filter(group => !group.isMain).map(group => group.path)]
+
+      for (const candidate of candidates) {
+        if (candidate && isPathUnder(candidate, path) && segments(candidate).length > depth) {
+          best = repo
+          depth = segments(candidate).length
+        }
+      }
+    }
+
+    return best
+  }
+
+  const destinations = new Map(projectLive.map(session => [session.id, destination(session)]))
+
   const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, projectLive, removed)
+    const elsewhere = projectLive.filter(
+      session => destinations.get(session.id) && destinations.get(session.id) !== repo
+    )
+
+    const excluded = elsewhere.length ? new Set([...removed, ...elsewhere.map(session => session.id)]) : removed
+
+    const next = overlayRepoLanes(
+      repo,
+      projectLive.filter(session => !destinations.get(session.id) || destinations.get(session.id) === repo),
+      excluded
+    )
 
     changed ||= next !== repo
 
