@@ -1,5 +1,6 @@
 # run log
 
+2026-11-04 06:10 utc | pr-upkeep | 38 open prs, none updated since 2026-11-03 21:05 so no new reviews or comments, none dirty or failing, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-04 03:25 utc | pr-upkeep | 38 open prs, all mergeable (blocked on review only), no changes requested, no unanswered human comments (134756 acp ask already answered, 134907 and 135528 are third party test receipts), all linked issues still open, drafts 131702 132427 133218 135467 left as drafts, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-04 03:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no closing prs, merge check skipped (no fork checkout in this env), poster still blocked, nothing pushed to fork
 2026-11-03 21:30 utc | pr-upkeep | 38 open prs, none dirty or failing and no changes requested, no new human comments newer than commits, 135467 duplicate of still-open 135466 so left alone, 135224 and 130376 ready already queued and posted, none closed or merged in the last 3h, nothing pushed or queued
