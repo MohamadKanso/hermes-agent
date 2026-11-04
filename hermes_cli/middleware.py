@@ -201,7 +201,8 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         try:
             return callback(**call_kwargs)
         except _DownstreamExecutionError as exc:
-            raise exc.original
+            downstream_error = exc.original
+            downstream_context = downstream_error.__context__
         except Exception as exc:
             # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
             # so it goes through the manager's warn-once reporter (#111922).
@@ -211,5 +212,11 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
             if next_called:
                 raise
             return call_at(index + 1, payload)
+
+        # raising while a caller handles another exception can replace the original context
+        try:
+            raise downstream_error
+        finally:
+            downstream_error.__context__ = downstream_context
 
     return call_at(0, kwargs[payload_key])
