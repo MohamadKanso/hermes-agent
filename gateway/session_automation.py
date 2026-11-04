@@ -325,7 +325,28 @@ def admission_display(payload):
 
 
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    items = source.to_dict().items() if hasattr(source, "to_dict") else source.items()
+    identity = {key: value for key, value in items if key != "message_id"}
+    platform = getattr(source, "platform", None)
+    if platform == Platform.WHATSAPP or identity.get("platform") in (
+        Platform.WHATSAPP,
+        Platform.WHATSAPP.value,
+        "whatsapp",
+    ):
+        from gateway.whatsapp_identity import canonical_whatsapp_identifier
+
+        is_dm = identity.get("chat_type") in ("dm", None) and not str(
+            identity.get("chat_id") or ""
+        ).endswith("@g.us")
+        for key in ("chat_id", "user_id", "user_id_alt"):
+            if key == "chat_id" and not is_dm:
+                continue
+            if identity.get(key):
+                identity[key] = (
+                    canonical_whatsapp_identifier(str(identity[key]))
+                    or identity[key]
+                )
+    return identity
 
 
 def committed_route_envelope(authority, entry):
