@@ -1,5 +1,6 @@
 # run log
 
+2026-11-04 03:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no closing prs, merge check skipped (no fork checkout in this env), poster still blocked, nothing pushed to fork
 2026-11-03 21:30 utc | pr-upkeep | 38 open prs, none dirty or failing and no changes requested, no new human comments newer than commits, 135467 duplicate of still-open 135466 so left alone, 135224 and 130376 ready already queued and posted, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-04 00:30 utc | pr-upkeep | 38 open prs, all mergeable (blocked on review only), no changes requested, no human comments newer than commits (118374 inline thread already answered), nothing closed or merged by maintainers, nothing pushed or queued
 2026-11-03 21:00 utc | outbox poster | pr create refused for fix/145268-tui-checkpoint-limits: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);marked #135224 ready;marked #130376 ready
