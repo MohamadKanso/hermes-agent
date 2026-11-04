@@ -71,6 +71,9 @@ class FalImageGenProvider(StaticImageGenProvider):
 
         aspect = resolve_aspect_ratio(aspect_ratio)
         passthrough = {key: kwargs[key] for key in _PASSTHROUGH_KWARGS if kwargs.get(key) is not None}
+        model = kwargs.get("model")
+        if isinstance(model, str):
+            passthrough["fal_model"] = model
         # Only forward image-to-image inputs when supplied (no noisy None kwargs).
         if image_url is not None:
             passthrough["image_url"] = image_url
@@ -96,13 +99,13 @@ class FalImageGenProvider(StaticImageGenProvider):
                 "success": False, "image": None, "error": "FAL pipeline returned a non-dict response",
                 "error_type": "provider_contract",
             }
-        # Stamp the uniform shape; the legacy pipeline resolves the model internally.
+        # report the model actually used, including the configured fallback
         response.setdefault("provider", "fal")
         response.setdefault("prompt", prompt)
         response.setdefault("aspect_ratio", aspect)
         if "model" not in response:
             try:
-                response["model"] = _it._resolve_fal_model()[0]
+                response["model"] = model if isinstance(model, str) and model in _it.FAL_MODELS else _it._resolve_fal_model()[0]
             except Exception:
                 pass
         return response

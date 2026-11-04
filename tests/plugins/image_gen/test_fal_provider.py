@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Provider surface
@@ -55,6 +56,48 @@ class TestFalImageGenProviderSurface:
 
 
 class TestFalImageGenProviderGenerate:
+    @pytest.mark.parametrize("image_url", [None, "https://example.com/source.png"])
+    def test_model_override_selects_requested_endpoint_and_reports_it(self, monkeypatch, image_url):
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+        from tools.image_generation_catalog import FAL_MODELS
+
+        selected = "fal-ai/nano-banana-pro"
+        default = "fal-ai/flux-2/klein/9b"
+        calls = []
+        monkeypatch.setattr(image_tool, "_resolve_fal_model", lambda: (default, FAL_MODELS[default]))
+        monkeypatch.setattr(image_tool, "_debug", MagicMock())
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda endpoint, arguments: calls.append(endpoint))
+        monkeypatch.setattr(image_tool, "_wait_fal_result", lambda _request: {"images": [{"url": "https://example.com/a.png"}]})
+        monkeypatch.setattr(image_tool, "_format_images", lambda images, *_args: images)
+
+        result = FalImageGenProvider().generate("a lighthouse", model=selected, image_url=image_url)
+
+        assert result["success"] is True
+        assert calls == [FAL_MODELS[selected]["edit_endpoint"] if image_url else selected]
+        assert result["model"] == selected
+
+    def test_unknown_override_reports_the_configured_fallback(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+        from tools.image_generation_catalog import FAL_MODELS
+
+        default = "fal-ai/flux-2/klein/9b"
+        calls = []
+        monkeypatch.setattr(image_tool, "_resolve_fal_model", lambda: (default, FAL_MODELS[default]))
+        monkeypatch.setattr(image_tool, "_debug", MagicMock())
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda endpoint, arguments: calls.append(endpoint))
+        monkeypatch.setattr(image_tool, "_wait_fal_result", lambda _request: {"images": [{"url": "https://example.com/a.png"}]})
+        monkeypatch.setattr(image_tool, "_format_images", lambda images, *_args: images)
+
+        result = FalImageGenProvider().generate("a lighthouse", model="unknown")
+
+        assert result["success"] is True
+        assert calls == [default]
+        assert result["model"] == default
+
     def test_generate_delegates_to_legacy_image_generate_tool(self, monkeypatch):
         """Plugin must look up ``image_generate_tool`` at call time so
         ``monkeypatch.setattr(image_tool, "image_generate_tool", ...)``
