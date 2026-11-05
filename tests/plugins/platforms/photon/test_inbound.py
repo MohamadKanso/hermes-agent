@@ -305,3 +305,61 @@ async def test_disconnect_cancels_pending_fffc_tasks(
     await adapter.disconnect()
 
     assert len(adapter._pending_fffc) == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_group_text_and_photo_single_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """inbound group message containing text parts and photo delivers as one turn (#149392)."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw_image = b"\xff\xd8\xff\xe0test image bytes\xff\xd9"
+    event = _dm_event("", msg_id="spc-msg-group-1")
+    event["content"] = {
+        "type": "group",
+        "items": [
+            {
+                "id": "p:0/spc-msg-group-1",
+                "content": {
+                    "type": "text",
+                    "text": "can i plant an orange tree with this:",
+                },
+            },
+            {
+                "id": "p:1/spc-msg-group-1",
+                "content": {
+                    "type": "attachment",
+                    "name": "tree.jpg",
+                    "mimeType": "image/jpeg",
+                    "data": base64.b64encode(raw_image).decode("ascii"),
+                    "encoding": "base64",
+                },
+            },
+            {
+                "id": "p:2/spc-msg-group-1",
+                "content": {
+                    "type": "text",
+                    "text": "looks hard, right?",
+                },
+            },
+        ],
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_id == "spc-msg-group-1"
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.text == "can i plant an orange tree with this:\nlooks hard, right?"
+    assert len(ev.media_urls) == 1
+    assert ev.media_types == ["image/jpeg"]
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw_image
+    finally:
+        cached.unlink(missing_ok=True)
+
