@@ -56,6 +56,9 @@ _DOH_PROVIDERS: list[dict] = [
         "url": "https://cloudflare-dns.com/dns-query", "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
         "headers": {"Accept": "application/dns-json"}},
 ]
+# dns cache ttl and failure backoff for resolved fallback ips
+_DNS_CACHE_TTL_S = 60.0
+_DNS_FAILURE_BACKOFF_S = 15.0
 # Last-resort IPv4 Bot API endpoints (149.154.160.0/20). Used when DoH is blocked AND as
 # first-try connect targets so a blackholed IPv6 AAAA for the hostname can't pin initialize().
 SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
@@ -93,6 +96,93 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
         self._last_failure: tuple[str, str] | None = None
+        # system dns resolution cache and backoff to avoid thread pool exhaustion (#149381)
+        self._dns_lock = asyncio.Lock()
+        self._dns_cached_ips: list[str] | None = None
+        self._dns_cached_at: float = 0.0
+        self._dns_last_failed_at: float = 0.0
+
+    async def _resolve_system_ips_safe(self) -> tuple[list[str], bool]:
+        """resolve system dns off-thread with a bounded timeout and ttl cache."""
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._dns_cached_ips is not None and (now - self._dns_cached_at) < _DNS_CACHE_TTL_S:
+            return self._dns_cached_ips, False
+        if (now - self._dns_last_failed_at) < _DNS_FAILURE_BACKOFF_S:
+            return [], False
+        async with self._dns_lock:
+            now = loop.time()
+            if self._dns_cached_ips is not None and (now - self._dns_cached_at) < _DNS_CACHE_TTL_S:
+                return self._dns_cached_ips, False
+            if (now - self._dns_last_failed_at) < _DNS_FAILURE_BACKOFF_S:
+                return [], False
+            try:
+                res = await asyncio.wait_for(
+                    asyncio.to_thread(_resolve_system_dns),
+                    timeout=_DOH_TIMEOUT,
+                )
+                system_ips = _normalize_fallback_ips(res)
+                self._dns_cached_ips = system_ips
+                self._dns_cached_at = now
+                return system_ips, False
+            except TimeoutError:
+                self._dns_last_failed_at = now
+                logger.debug("[Telegram] Offloaded system DNS resolution for %s timed out", _TELEGRAM_API_HOST)
+                return [], True
+            except Exception as exc:
+                self._dns_last_failed_at = now
+                logger.debug("[Telegram] Offloaded system DNS resolution failed: %s", exc)
+                return [], False
+
+    async def _try_candidate(
+        self,
+        request: httpx.Request,
+        ip: str | None,
+        last_error: Exception | None,
+    ) -> httpx.Response:
+        """execute one candidate request against an ip literal or primary transport."""
+        candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
+        transport = self._primary if ip is None else await self._get_fallback(ip)
+        response = await transport.handle_async_request(candidate)
+        if self._last_failure is not None:
+            failed_path, failure = self._last_failure
+            self._last_failure = None
+            logger.info(
+                "[Telegram] Telegram API transport recovered via %s after %s failed: %s",
+                ip or _TELEGRAM_API_HOST,
+                failed_path,
+                failure,
+            )
+        if self._sticky_ip is _UNSET or self._sticky_ip != ip:
+            async with self._sticky_lock:
+                if self._sticky_ip is _UNSET or self._sticky_ip != ip:
+                    self._sticky_ip = ip
+                    if ip is not None:
+                        log = logger.warning if last_error is not None else logger.info
+                        log("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
+        return response
+
+    async def _handle_candidate_error(self, ip: str | None, exc: Exception) -> None:
+        """record candidate failure, reset sticky if needed, and recycle the broken pool."""
+        path = ip or _TELEGRAM_API_HOST
+        failure = _describe_transport_error(exc)
+        self._last_failure = (path, failure)
+        if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
+            async with self._sticky_lock:
+                if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
+                    self._sticky_ip = _UNSET
+                    logger.warning(
+                        "[Telegram] Sticky Telegram path %s failed; re-walking IPv4 literals before the hostname",
+                        ip if ip is not None else "api.telegram.org",
+                    )
+        if ip is None:
+            async with self._primary_lock:
+                primary = self._primary
+            await self._reset_primary(primary)
+            logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
+        else:
+            logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
+            await self._reset_fallback(ip)
 
     async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
         async with self._fallback_lock:
@@ -144,49 +234,58 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
+        attempted: set[str] = set()
         for ip in self._attempt_order():
-            candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
-            transport = self._primary if ip is None else await self._get_fallback(ip)
+            if ip is not None:
+                if ip in attempted:
+                    continue
+                attempted.add(ip)
+                try:
+                    return await self._try_candidate(request, ip, last_error)
+                except Exception as exc:
+                    last_error = exc
+                    if not _is_retryable_connect_error(exc):
+                        raise
+                    await self._handle_candidate_error(ip, exc)
+                    continue
+
+            # ip is None: offload hostname resolution off the event loop thread (#149381)
+            system_ips, timed_out = await self._resolve_system_ips_safe()
+
+            # try resolved system ips as literals first so create_connection never performs a blocking getaddrinfo
+            if system_ips:
+                for sys_ip in system_ips:
+                    if sys_ip in attempted:
+                        continue
+                    attempted.add(sys_ip)
+                    try:
+                        return await self._try_candidate(request, sys_ip, last_error)
+                    except Exception as exc:
+                        last_error = exc
+                        if not _is_retryable_connect_error(exc):
+                            raise
+                        await self._handle_candidate_error(sys_ip, exc)
+                        continue
+                # all resolved system ips failed; do not fall through to self._primary
+                continue
+
+            # if system dns timed out, resolver is wedged so do not hit self._primary with the hostname
+            if timed_out:
+                last_error = httpx.ConnectTimeout(f"System DNS resolution for {_TELEGRAM_API_HOST} timed out")
+                self._last_failure = (_TELEGRAM_API_HOST, _describe_transport_error(last_error))
+                logger.warning("[Telegram] Dual-stack %s path skipped (system DNS timed out)", _TELEGRAM_API_HOST)
+                continue
+
+            # if system dns cleanly returned no ipv4 (or mocked), try self._primary as last resort
             try:
-                response = await transport.handle_async_request(candidate)
-                if self._last_failure is not None:
-                    failed_path, failure = self._last_failure
-                    self._last_failure = None
-                    logger.info(
-                        "[Telegram] Telegram API transport recovered via %s after %s failed: %s",
-                        ip or _TELEGRAM_API_HOST,
-                        failed_path,
-                        failure,
-                    )
-                if self._sticky_ip is _UNSET or self._sticky_ip != ip:
-                    async with self._sticky_lock:
-                        if self._sticky_ip is _UNSET or self._sticky_ip != ip:
-                            self._sticky_ip = ip
-                            if ip is not None:
-                                log = logger.warning if last_error is not None else logger.info
-                                log("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
-                return response
+                return await self._try_candidate(request, None, last_error)
             except Exception as exc:
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
                     raise
-                path = ip or _TELEGRAM_API_HOST
-                failure = _describe_transport_error(exc)
-                self._last_failure = (path, failure)
-                if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
-                    async with self._sticky_lock:
-                        if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
-                            self._sticky_ip = _UNSET
-                            logger.warning(
-                                "[Telegram] Sticky Telegram path %s failed; re-walking IPv4 literals before the hostname",
-                                ip if ip is not None else "api.telegram.org")
-                if ip is None:
-                    await self._reset_primary(transport)
-                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
-                    continue
-                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
-                await self._reset_fallback(ip)
+                await self._handle_candidate_error(None, exc)
                 continue
+
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error

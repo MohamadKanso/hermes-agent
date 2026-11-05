@@ -158,11 +158,125 @@ class TestFallbackTransport:
         calls = []
         behavior = {"149.154.167.220": "timeout", "api.telegram.org": "ok"}
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        monkeypatch.setattr(tnet, "_resolve_system_dns", lambda: set())
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
         assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
         assert transport._sticky_ip is None
+
+    @pytest.mark.asyncio
+    async def test_system_dns_resolved_off_loop_and_tried_as_literal_ip(self, monkeypatch):
+        """#149381: offloaded system dns results are retried as literal ips."""
+        calls = []
+        behavior = {
+            "149.154.167.220": "timeout",
+            "149.154.166.110": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        monkeypatch.setattr(tnet, "_resolve_system_dns", lambda: {"149.154.166.110"})
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.166.110"]
+        assert calls[1]["host_header"] == "api.telegram.org"
+        assert calls[1]["sni_hostname"] == "api.telegram.org"
+        assert transport._sticky_ip == "149.154.166.110"
+
+    @pytest.mark.asyncio
+    async def test_hung_system_dns_does_not_block_event_loop(self, monkeypatch):
+        """#149381: a wedged os resolver does not stall the gateway event loop."""
+        import asyncio
+        import threading
+        import time
+
+        calls = []
+        behavior = {"149.154.167.220": "timeout"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.15)
+
+        done_event = threading.Event()
+
+        def _hung_getaddrinfo():
+            done_event.wait(timeout=0.3)
+            return {"149.154.166.110"}
+
+        monkeypatch.setattr(tnet, "_resolve_system_dns", _hung_getaddrinfo)
+
+        ticks = 0
+        ticker_running = True
+
+        async def _ticker():
+            nonlocal ticks
+            while ticker_running:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        ticker_task = asyncio.create_task(_ticker())
+        start = time.monotonic()
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        with pytest.raises(httpx.ConnectTimeout):
+            await transport.handle_async_request(_telegram_request())
+        elapsed = time.monotonic() - start
+        ticker_running = False
+        done_event.set()
+        await ticker_task
+
+        assert ticks >= 5, f"event loop stalled: only {ticks} ticks in {elapsed:.2f}s"
+        assert elapsed < 1.0, f"request took too long ({elapsed:.2f}s)"
+
+    @pytest.mark.asyncio
+    async def test_system_dns_all_fail_does_not_fall_through_to_primary(self, monkeypatch):
+        """#149381: when resolved system ips fail, do not fall through to self._primary."""
+        calls = []
+        behavior = {
+            "149.154.167.220": "timeout",
+            "149.154.166.110": "timeout",
+            "api.telegram.org": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        monkeypatch.setattr(tnet, "_resolve_system_dns", lambda: {"149.154.166.110"})
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        with pytest.raises(httpx.ConnectTimeout):
+            await transport.handle_async_request(_telegram_request())
+
+        # verify api.telegram.org was never contacted because resolved ips failed
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.166.110"]
+
+    @pytest.mark.asyncio
+    async def test_system_dns_cached_within_ttl(self, monkeypatch):
+        """#149381: system dns resolution is cached across requests."""
+        calls = []
+        behavior = {
+            "149.154.167.220": "timeout",
+            "149.154.166.110": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        resolve_count = 0
+
+        def _counted_resolve():
+            nonlocal resolve_count
+            resolve_count += 1
+            return {"149.154.166.110"}
+
+        monkeypatch.setattr(tnet, "_resolve_system_dns", _counted_resolve)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp1 = await transport.handle_async_request(_telegram_request())
+        assert resp1.status_code == 200
+        assert resolve_count == 1
+
+        # sticky was set to .110; make .110 fail to force re-walking candidates
+        transport._sticky_ip = tnet._UNSET
+        behavior["149.154.166.110"] = "timeout"
+        with pytest.raises(httpx.ConnectTimeout):
+            await transport.handle_async_request(_telegram_request())
+
+        # within ttl: _resolve_system_dns should not be called again
+        assert resolve_count == 1
 
 class TestFallbackTransportPassthrough:
     """Requests that don't need fallback behavior."""
