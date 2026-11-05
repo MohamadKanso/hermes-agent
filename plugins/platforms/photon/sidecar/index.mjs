@@ -333,7 +333,9 @@ const app = await Spectrum({
   projectId,
   projectSecret,
   providers: [imessage.config()],
-  options: { flattenGroups: true },
+  // keep groups unflattened so multi-part imessages (text + photo attachments)
+  // arrive as a single group turn instead of splitting into multiple turns (#149392)
+  options: { flattenGroups: false },
   telemetry,
 });
 
