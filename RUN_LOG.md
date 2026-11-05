@@ -1,5 +1,6 @@
 # run log
 
+2026-11-05 06:15 utc | pr-upkeep | 38 open prs (last run said 40, search shows no closes or merges since 11-04), none updated since 2026-11-03 21:05 so no new reviews or comments, all blocked on review only (none dirty), no ci runs on any head, no linked issues closed, drafts 131702 133218 135467 left alone, nothing pushed or queued (ready 132427 still pending in outbox)
 2026-11-05 03:15 utc | pr-upkeep | 40 open prs, none updated since 2026-11-03 21:05 so no new reviews or comments, all mergeable and blocked on review only, no closed or merged in the last 3h, nothing pushed or queued (ready 132427 still pending in outbox)
 2026-11-05 00:15 utc | pr-upkeep | 38 open prs, none updated since 2026-11-03 21:05, no reviews or changes requested, no conflicts (blocked on review only), no failing checks, no linked issues closed, 131643 kokhlo point already covered, read the diff of draft 132427 and it looks sound so queued ready, left 133218 131702 135467 alone (131702 has an empty body, 135467 dup of open 135466), none closed or merged in the last 3h, nothing pushed
 2026-11-04 21:15 utc | pr-upkeep | 38 open prs, none updated since 2026-11-03 21:05 so no new reviews or comments, all 38 blocked on review only (none dirty), no failing checks, none closed or merged in the last 3h, nothing pushed or queued
