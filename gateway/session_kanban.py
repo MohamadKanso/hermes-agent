@@ -43,16 +43,18 @@ def build_kanban_policy(connection, params, config):
                 raise RuntimeStoreError('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
             skills = list(task.skills or ())
-            if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
-                # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
-                skills = list(dict.fromkeys([*skills, 'sdlc-review']))
+            is_review = kb._retry_status_for_run(conn, task.id, task.current_run_id) == "review"
+            if is_review:
+                # same rule as the dispatcher review lane: the reviewer always loads sdlc-review
+                skills = list(dict.fromkeys([*skills, "sdlc-review"]))
     except (ValueError, OSError, sqlite3.Error) as exc:
-        raise RuntimeStoreError('invalid_kanban_claim') from exc
+        raise RuntimeStoreError("invalid_kanban_claim") from exc
     cwd = task.workspace_path
-    params_policy = {'source': 'cli', 'cwd': cwd}
-    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
-        if value:
-            params_policy[name] = value
+    params_policy = {"source": "cli", "cwd": cwd}
+    if not is_review:
+        for name, value in (("model", task.model_override), ("provider", task.provider_override), ("reasoning", task.reasoning_effort)):
+            if value:
+                params_policy[name] = value
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
     if policy.model is None:

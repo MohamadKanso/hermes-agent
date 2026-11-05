@@ -42,6 +42,13 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+    # a git worktree's .git file points back to the main checkout's .git/worktrees dir
+    *(
+        {Path((Path(__file__).resolve().parent.parent / ".git").read_text("utf-8").strip()[len("gitdir:"):].strip()).resolve()}
+        if (Path(__file__).resolve().parent.parent / ".git").is_file()
+        and (Path(__file__).resolve().parent.parent / ".git").read_text("utf-8").strip().startswith("gitdir:")
+        else ()
+    ),
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
