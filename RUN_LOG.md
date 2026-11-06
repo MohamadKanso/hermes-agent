@@ -1,6 +1,7 @@
 # run log
 
 2026-11-06 18:10 utc | pr-upkeep | 38 open prs, none updated since 11-05 08:07 so no new reviews or comments or ci changes, none closed or merged in the last 3h, nothing pushed or queued
+2026-11-06 19:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned, poster still not opening prs, nothing pushed to fork
 2026-11-06 15:20 utc | pr-upkeep | 38 open prs, all mergeable (blocked on review only), no failing ci, no review feedback newer than commits, linked issues all still open, drafts 131702 (empty body) 133218 (tests not run here) 135467 (dup of open 135466) left for the owner, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-06 15:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no closing prs, poster still blocked, nothing pushed to fork
 2026-11-06 12:20 utc | pr-upkeep | 38 open prs, none updated since 11-05 08:07 so no new reviews or comments, none closed or merged in the last 3h, nothing pushed or queued
