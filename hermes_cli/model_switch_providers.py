@@ -996,6 +996,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs."""
     from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
     from hermes_cli.config import coerce_provider_id, is_provider_enabled
+    from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
     ep_groups: dict[tuple, dict] = {}
     for ep_name, ep_cfg in user_providers.items():
         if not isinstance(ep_cfg, dict) or not is_provider_enabled(ep_cfg) or ep_name.lower() in b.seen_slugs:
@@ -1008,9 +1009,13 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
 
         if group_key not in ep_groups:
             # slug = first ep_name encountered; probe key from the first member (inline api_key,
-            # else key_env through the per-profile secret scope).
+            # else key_env through the per-profile secret scope). emit custom:<name> if the bare key
+            # collides with a canonical built-in provider id so sessions resolve to the custom endpoint.
+            norm_key = str(ep_name).strip().lower()
+            needs_custom_slug = _shadowed_by_builtin(norm_key) and norm_key != "lmstudio"
+            ep_slug = custom_provider_slug(display_name, ep_name) if needs_custom_slug else ep_name
             ep_groups[group_key] = {
-                "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
+                "slug": ep_slug, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
                 "has_explicit_models": False,
                 "api_key": inline_api_key or _scoped_key_env(key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
