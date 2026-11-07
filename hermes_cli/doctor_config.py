@@ -249,10 +249,9 @@ def _provider_has_credentials(runtime_provider: str) -> bool:
 
 
 def _validate_model_config(config_path, issues: list) -> None:
-    """Validate model.provider / model.default against the provider registry (raw file)."""
-    # Detect stale root-level model keys (known bug source — PR #4329)
-    from hermes_cli.config import read_user_config_raw
-    cfg = read_user_config_raw(config_path)
+    """validate the effective model.provider / model.default against the provider registry."""
+    from hermes_cli.config_effective import load_user_config_effective
+    cfg = load_user_config_effective(config_path)
     model_section = cfg.get("model") or {}
     provider_raw = (model_section.get("provider") or "").strip()
     provider = provider_raw.lower()
@@ -308,11 +307,11 @@ def _validate_model_config(config_path, issues: list) -> None:
 def _validate_auxiliary_config(config_path, issues: list) -> None:
     """Resolve every routed ``auxiliary.<task>`` block through the real entry point the tasks use and report
     the ones that fail — an unresolvable block otherwise silently runs the task on the main model (#116055)."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_effective import load_user_config_effective
     from hermes_cli.left_core_migration import provider_install_hint
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
-    aux = read_user_config_raw(config_path).get("auxiliary")
+    aux = load_user_config_effective(config_path).get("auxiliary")
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
               if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
     ok = []
@@ -347,17 +346,17 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
     if config_exists(config_path):
         if backend.supports_file_tooling():
             check_ok(f"{_DHH}/config.yaml exists")
-        with warn_on_error("Could not validate model/provider config"):
-            _validate_model_config(config_path, f.issues)
-        with warn_on_error("Could not validate auxiliary task routing"):
-            _validate_auxiliary_config(config_path, f.issues)
     elif should_fix:
         from hermes_cli.config import seed_config_file
         from_template = seed_config_file(config_path, PROJECT_ROOT / 'cli-config.yaml.example')
         check_ok(f"Created {_DHH}/config.yaml from {'cli-config.yaml.example' if from_template else 'defaults'}")
         f.fixed += 1
     else:
-        check_warn("config.yaml not found", "(using defaults)")
+        check_warn("config.yaml not found", "(using defaults and any managed settings)")
+    with warn_on_error("Could not validate model/provider config"):
+        _validate_model_config(config_path, f.issues)
+    with warn_on_error("Could not validate auxiliary task routing"):
+        _validate_auxiliary_config(config_path, f.issues)
 
 
 def _check_config_backend(backend, home, f: Finding) -> bool:
