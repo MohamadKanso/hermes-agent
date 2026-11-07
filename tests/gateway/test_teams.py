@@ -6,6 +6,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import hermes_bootstrap
 import pytest
 
 from gateway.config import PlatformConfig
@@ -50,6 +51,7 @@ def _ensure_teams_mock():
             self.server.handle_request = AsyncMock(return_value={"status": 200, "body": None})
             self.credentials = MagicMock()
             self.credentials.client_id = self._client_id
+            self.api = MagicMock()
 
         @property
         def id(self):
@@ -139,10 +141,24 @@ def _ensure_teams_mock():
     microsoft_teams_apps_http_adapter.HttpMethod = HttpMethod
     microsoft_teams_apps_http_adapter.HttpRouteHandler = HttpRouteHandler
 
+    microsoft_teams_apps_activity_send = types.ModuleType("microsoft_teams.apps.activity_send")
+    microsoft_teams_apps_activity_send.send_or_update_activity = AsyncMock(
+        return_value=SimpleNamespace(id="sent-activity-id")
+    )
+
+    microsoft_teams.apps = microsoft_teams_apps
+    microsoft_teams.api = microsoft_teams_api
+    microsoft_teams.common = microsoft_teams_common
+    microsoft_teams.cards = microsoft_teams_cards
+    microsoft_teams_apps.activity_send = microsoft_teams_apps_activity_send
+    microsoft_teams_apps.http = microsoft_teams_apps_http
+    microsoft_teams_apps_http.adapter = microsoft_teams_apps_http_adapter
+
     # Wire the hierarchy
     for name, mod in {
         "microsoft_teams": microsoft_teams,
         "microsoft_teams.apps": microsoft_teams_apps,
+        "microsoft_teams.apps.activity_send": microsoft_teams_apps_activity_send,
         "microsoft_teams.api": microsoft_teams_api,
         "microsoft_teams.api.activities": microsoft_teams_api_activities,
         "microsoft_teams.api.activities.typing": microsoft_teams_api_activities_typing,
@@ -1189,3 +1205,101 @@ async def test_long_non_ascii_command_keeps_button_data_small():
         await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
     assert len(buttons) == 4
     assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024
+
+
+# ---------------------------------------------------------------------------
+# tests: proactive sends via conversation reference (#150851)
+# ---------------------------------------------------------------------------
+
+class TestTeamsConvRefSend:
+    """proactive activity dispatch via cached conversation reference."""
+
+    @pytest.mark.anyio
+    async def test_send_via_conv_ref_uses_send_or_update_activity_when_cached(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.api = MagicMock()
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="fallback-id"))
+
+        mock_send = AsyncMock(return_value=SimpleNamespace(id="conv-ref-id"))
+        monkeypatch.setattr(
+            "microsoft_teams.apps.activity_send.send_or_update_activity",
+            mock_send,
+            raising=False,
+        )
+
+        conv_ref = SimpleNamespace(conversation=SimpleNamespace(id="conv-1"))
+        adapter._conv_refs["chat-1"] = conv_ref
+
+        activity = SimpleNamespace(type="message", id=None)
+        fallback = SimpleNamespace(text="fallback")
+
+        result = await adapter._send_via_conv_ref("chat-1", activity, fallback)
+
+        assert result.id == "conv-ref-id"
+        mock_send.assert_awaited_once_with(adapter._app.api, activity, conv_ref)
+        adapter._app.send.assert_not_called()
+        assert "conv-ref-id" in adapter._sent_ids
+
+    @pytest.mark.anyio
+    async def test_send_via_conv_ref_falls_back_to_app_send_when_uncached(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.api = MagicMock()
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="fallback-id"))
+
+        mock_send = AsyncMock()
+        monkeypatch.setattr(
+            "microsoft_teams.apps.activity_send.send_or_update_activity",
+            mock_send,
+            raising=False,
+        )
+
+        activity = SimpleNamespace(type="message", id=None)
+        fallback = SimpleNamespace(text="fallback")
+
+        result = await adapter._send_via_conv_ref("unknown-chat", activity, fallback)
+
+        assert result.id == "fallback-id"
+        mock_send.assert_not_called()
+        adapter._app.send.assert_awaited_once_with("unknown-chat", fallback)
+        assert "fallback-id" in adapter._sent_ids
+
+    @pytest.mark.anyio
+    async def test_send_via_conv_ref_falls_back_to_legacy_activity_sender_if_available(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock(spec=["activity_sender", "send"])
+        adapter._app.activity_sender = MagicMock()
+        adapter._app.activity_sender.send = AsyncMock(return_value=SimpleNamespace(id="legacy-id"))
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="fallback-id"))
+
+        conv_ref = SimpleNamespace(conversation=SimpleNamespace(id="conv-legacy"))
+        adapter._conv_refs["chat-legacy"] = conv_ref
+
+        activity = SimpleNamespace(type="message", id=None)
+        fallback = SimpleNamespace(text="fallback")
+
+        result = await adapter._send_via_conv_ref("chat-legacy", activity, fallback)
+
+        assert result.id == "legacy-id"
+        adapter._app.activity_sender.send.assert_awaited_once_with(activity, conv_ref)
+        adapter._app.send.assert_not_called()
+        assert "legacy-id" in adapter._sent_ids
+
+    @pytest.mark.anyio
+    async def test_send_via_conv_ref_falls_back_to_app_send_when_no_modern_or_legacy_sender(self):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock(spec=["send"])
+        adapter._app.send = AsyncMock(return_value=SimpleNamespace(id="plain-send-id"))
+
+        conv_ref = SimpleNamespace(conversation=SimpleNamespace(id="conv-none"))
+        adapter._conv_refs["chat-none"] = conv_ref
+
+        activity = SimpleNamespace(type="message", id=None)
+        fallback = SimpleNamespace(text="fallback")
+
+        result = await adapter._send_via_conv_ref("chat-none", activity, fallback)
+
+        assert result.id == "plain-send-id"
+        adapter._app.send.assert_awaited_once_with("chat-none", fallback)
+        assert "plain-send-id" in adapter._sent_ids
