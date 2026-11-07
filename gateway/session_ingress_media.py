@@ -471,14 +471,14 @@ def sweep_settled_media(db, *, now=None):
         return 0
     _last_sweep[db.db_path] = now
     with db._read_ctx() as conn:
-        rows = conn.execute("""SELECT json_extract(payload_json, '$.attachments_v1.media', '$.native_text_v1.media')
-            FROM session_admissions WHERE status='terminal' AND (json_type(payload_json, '$.attachments_v1.media')
-            IS NOT NULL OR json_type(payload_json, '$.native_text_v1.media') IS NOT NULL)""").fetchall()
+        rows = conn.execute("""SELECT json_extract(payload_json, '$.native_text_v1.media')
+            FROM session_admissions WHERE status='terminal' AND json_type(payload_json, '$.native_text_v1.media')
+            IS NOT NULL""").fetchall()
     cutoff = now - MEDIA_CACHE_MAX_AGE_HOURS * 3600
     stale = {}
     for (encoded,) in rows:
-        attachments, native = json.loads(encoded)
-        for reference in (attachments or []) + (native or []):
+        native = json.loads(encoded)
+        for reference in (native or []):
             try:
                 if Path(reference['path']).stat(follow_symlinks=False).st_mtime < cutoff:
                     stale[reference['path']] = reference
