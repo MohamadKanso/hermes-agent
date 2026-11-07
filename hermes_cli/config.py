@@ -48,7 +48,7 @@ from utils import atomic_replace, fast_safe_load, file_cache_version, file_signa
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
-    get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
+    get_config_backend, probe_config_readable, read_config_doc, repair_surrogates, supports_file_tooling,
     write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
@@ -3111,6 +3111,9 @@ _SCALAR_WORDS = {
     'null': None, 'none': None, '~': None}
 
 
+_repair_surrogates = repair_surrogates
+
+
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
@@ -3373,7 +3376,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
-    value = _coerce_config_set_value(key, value)
+    value = _repair_surrogates(_coerce_config_set_value(key, value))
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")
