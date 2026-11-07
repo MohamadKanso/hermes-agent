@@ -17,6 +17,7 @@ gives the exact rewrite rules and honest limits.
 | Native tables | edited sheet | table `ref` shifted/expanded |
 | Defined names | workbook scope | `attr_text` refs into the edited sheet rewritten |
 | Row heights / column widths | edited sheet | dimension keys re-indexed |
+| hyperlinks | edited sheet & all sheets | coordinate refs realigned on edited sheet; internal target locations into edited sheet rewritten |
 
 ## Reference grammar handled
 

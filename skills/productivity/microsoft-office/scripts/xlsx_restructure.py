@@ -104,6 +104,18 @@ def shift_range(rng, axis, idx, n, delete):
     return start if start == end and ":" not in rng else f"{start}:{end}"
 
 
+def realign_hyperlinks(ws):
+    """keep cell hyperlinks pinned to their coordinates after row/col shifts"""
+    for cell in list(ws._cells.values()):
+        if cell.hyperlink is not None and cell.hyperlink.ref != cell.coordinate:
+            cell.hyperlink.ref = cell.coordinate
+    ws._hyperlinks = [
+        c.hyperlink
+        for c in ws._cells.values()
+        if c.hyperlink is not None
+    ]
+
+
 class RefRewriter:
     """Rewrite A1 references in formula-like text for one shift op."""
 
@@ -295,7 +307,7 @@ def main(argv=None):
     report = {"ok": True, "sheet": ws.title, "axis": axis,
               "op": "delete" if delete else "insert", "index": idx, "count": n,
               "formulas": [], "merges": [], "tables": {}, "defined_names": {},
-              "validations": [], "conditional_formats": [],
+              "validations": [], "conditional_formats": [], "hyperlinks": [],
               "not_shifted": ["chart anchors", "images",
                               "conditional-format rule formulas"]}
 
@@ -306,6 +318,7 @@ def main(argv=None):
 
     # 2. structural move of cell values/styles/comments
     getattr(ws, f"{report['op']}_{axis}")(idx, n)
+    realign_hyperlinks(ws)
 
     # 3. formulas everywhere
     _rewrite_formulas(wb, rewriter, report)
@@ -381,6 +394,21 @@ def main(argv=None):
         shift_dimensions(ws.row_dimensions, idx, n, delete, is_row=True)
     else:
         shift_dimensions(ws.column_dimensions, idx, n, delete, is_row=False)
+
+    # 10. internal hyperlinks
+    for sheet in wb.worksheets:
+        for cell in list(sheet._cells.values()):
+            if cell.hyperlink is not None and cell.hyperlink.location:
+                old_loc = cell.hyperlink.location
+                new_loc = rewriter.rewrite(old_loc, sheet.title)
+                if new_loc != old_loc:
+                    cell.hyperlink.location = new_loc
+                    report["hyperlinks"].append({
+                        "sheet": sheet.title,
+                        "cell": cell.coordinate,
+                        "from": old_loc,
+                        "to": new_loc,
+                    })
 
     out = args.out or args.file
     wb.save(out)
