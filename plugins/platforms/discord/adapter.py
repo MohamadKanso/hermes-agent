@@ -6183,16 +6183,39 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             notify_error,
                         )
                     return False
+        direct_attachments = list(message.attachments) + snapshot_attachments
         referenced_attachments = []
         reference = getattr(message, "reference", None)
         resolved_reference = getattr(reference, "resolved", None) if reference else None
         if resolved_reference is not None:
             referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
+        ref_author = getattr(resolved_reference, "author", None) if resolved_reference else None
+        client_user = getattr(self._client, "user", None)
+        client_user_id = getattr(client_user, "id", None) if client_user else None
+        is_bot_ref = (
+            getattr(ref_author, "id", None) == client_user_id
+            if client_user_id is not None and getattr(ref_author, "id", None) is not None
+            else getattr(ref_author, "bot", False)
+        )
+        bot_audio_referenced = []
+        regular_referenced = []
+        if is_bot_ref:
+            # bot-originated referenced audio is context only; never sets msg_type or enters stt
+            for att in referenced_attachments:
+                ct = att.content_type or ""
+                if ct.startswith("audio/") or self._is_discord_voice_message_attachment(att):
+                    bot_audio_referenced.append(att)
+                else:
+                    regular_referenced.append(att)
+        else:
+            regular_referenced = referenced_attachments
+        all_attachments = direct_attachments + regular_referenced
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif all_attachments:
-            msg_type = self._attachment_message_type(all_attachments[0])
+        elif direct_attachments:
+            msg_type = self._attachment_message_type(direct_attachments[0])
+        elif regular_referenced and not is_bot_ref:
+            msg_type = self._attachment_message_type(regular_referenced[0])
         else:
             msg_type = MessageType.TEXT
         effective_channel = auto_threaded_channel or message.channel
@@ -6231,6 +6254,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
+        for att in bot_audio_referenced:
+            display_name = att.filename or (
+                "voice-message.ogg" if self._is_discord_voice_message_attachment(att) else "audio.ogg"
+            )
+            display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+            bot_note = f"[Replied-to audio '{display_name}' sent by the bot]"
+            if pending_text_injection:
+                pending_text_injection = f"{pending_text_injection}\n\n{bot_note}"
+            else:
+                pending_text_injection = bot_note
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
