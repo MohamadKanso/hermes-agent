@@ -1997,7 +1997,7 @@ def _update_fallback_context_compressor(agent) -> None:
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
     # resolving an auxiliary client while the primary route is failing (#114707).
     if getattr(agent, "_compression_feasibility_checked", False) is True:
-        from agent.conversation_compression import revalidate_compression_feasibility
+        from agent.conversation_compression_feasibility import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
 
 
@@ -2726,6 +2726,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        self._attempt_raw_stream = None
         # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
         self._request_route = self._live_route()
 
@@ -2785,6 +2786,9 @@ class _StreamingCall(StreamingWaitMonitor):
             current = int(self.stream_attempt_state["current"])
             if current:
                 self.stream_attempt_state["cancelled"].add(current)
+        cancel = getattr(self._attempt_raw_stream, "cancel", None)
+        if callable(cancel):
+            cancel()
         if current:
             logger.debug("Marked stream attempt %s cancelled: %s", current, reason)
 
@@ -2955,6 +2959,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
+        self._attempt_raw_stream = raw_stream
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
@@ -2962,6 +2967,16 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
+        on_response = getattr(raw_stream, "on_response", None)
+        if callable(on_response):
+            def _on_hop_response(hop_resp: Any) -> None:
+                self._attempt_stream_response = hop_resp
+                if hop_resp is not None:
+                    self.agent._capture_rate_limits(hop_resp)
+                    self.agent._capture_credits(hop_resp)
+                    self.agent._stream_diag_capture_response(self.clients.diag, hop_resp)
+                    self._reabort_if_cancelled(hop_resp)
+            on_response(_on_hop_response)
         self._reabort_if_cancelled(response)
 
     def _reabort_if_cancelled(self, response: Any) -> None:
@@ -2975,6 +2990,9 @@ class _StreamingCall(StreamingWaitMonitor):
             cancelled = self._request_cancelled["value"] or current in self.stream_attempt_state["cancelled"]
         if not cancelled:
             return
+        cancel = getattr(self._attempt_raw_stream, "cancel", None)
+        if callable(cancel):
+            cancel()
         self._shutdown_stale_attempt_socket(response)
         if self._attempt_request_client is not None:
             # Kind-aware: the anthropic_messages wire (incl. anthropic-compatible custom endpoints)
@@ -3043,6 +3061,7 @@ class _StreamingCall(StreamingWaitMonitor):
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        self._attempt_raw_stream = None
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
         # The raw channels, not the callback-delivered text: cron, subagents and callback-less
@@ -3386,6 +3405,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
+        self._attempt_raw_stream = None
         self._attempt_request_client = request_client
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
@@ -3775,6 +3795,9 @@ class _StreamingCall(StreamingWaitMonitor):
         exactly what the shutdown-only rule in ``_abort_request_slot_client``
         forbids (it covers request-local clients too, #30858).
         """
+        cancel = getattr(self._attempt_raw_stream, "cancel", None)
+        if callable(cancel):
+            cancel()
         if response is None or response is not self._attempt_stream_response:
             return
         try:
