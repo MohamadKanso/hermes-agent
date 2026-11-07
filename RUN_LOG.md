@@ -1,5 +1,6 @@
 # run log
 
+2026-11-07 09:25 utc | pr-upkeep | 38 open prs, no reviews or comments newer than commits, no dead issues, ci clean, merged main into 3 conflicted branches and pushed to fork (110992 121672 132418, tests pass), 121672 dropped an unused helper upstream already deleted, drafts 131702 133218 135467 still left for the owner, nothing queued
 2026-11-07 06:20 utc | pr-upkeep | checked the first 30 of 38 open prs (api rate limit hit before the rest), all mergeable (blocked on review only), no failing ci, no reviews or changes requested, no human comments newer than commits (131643 kokhlo point already fixed in a later commit), linked issues all still open, drafts 131702 (empty body) 133218 (tests not run here) 135467 (dup of open 135466) left for the owner, none closed or merged in the last 3h, nothing pushed or queued
 2026-11-07 03:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no closing prs, merge check not possible (local checkout has no shared history with the fork branches), poster still not opening prs, nothing pushed to fork
 2026-11-07 00:10 utc | pr-upkeep | 38 open prs, none updated since 11-05 08:07 so no new reviews or comments or ci changes, none closed or merged in the last 3h, nothing pushed or queued
