@@ -80,6 +80,18 @@ def parse_idx(arg):
     return int(arg), 1
 
 
+def realign_hyperlinks(ws):
+    """keep cell hyperlinks pinned to their coordinates after row/col shifts"""
+    for cell in list(ws._cells.values()):
+        if cell.hyperlink is not None and cell.hyperlink.ref != cell.coordinate:
+            cell.hyperlink.ref = cell.coordinate
+    ws._hyperlinks = [
+        c.hyperlink
+        for c in ws._cells.values()
+        if c.hyperlink is not None
+    ]
+
+
 def add_table(ws, spec):
     parts = spec.split(":")
     if len(parts) < 3:
@@ -177,18 +189,22 @@ def main(argv=None):
     for arg in args.insert_rows:
         idx, n = parse_idx(arg)
         ws.insert_rows(idx, n)
+        realign_hyperlinks(ws)
         changes.append(f"insert_rows {idx}x{n}")
     for arg in args.delete_rows:
         idx, n = parse_idx(arg)
         ws.delete_rows(idx, n)
+        realign_hyperlinks(ws)
         changes.append(f"delete_rows {idx}x{n}")
     for arg in args.insert_cols:
         idx, n = parse_idx(arg)
         ws.insert_cols(idx, n)
+        realign_hyperlinks(ws)
         changes.append(f"insert_cols {idx}x{n}")
     for arg in args.delete_cols:
         idx, n = parse_idx(arg)
         ws.delete_cols(idx, n)
+        realign_hyperlinks(ws)
         changes.append(f"delete_cols {idx}x{n}")
 
     for assignment in args.set:

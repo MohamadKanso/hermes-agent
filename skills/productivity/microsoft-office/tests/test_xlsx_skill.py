@@ -554,6 +554,102 @@ def test_sheet_protection(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# hyperlink coordinate realignment on row/col shifts (#150852)
+# ---------------------------------------------------------------------------
+
+def test_hyperlinks_realign_on_row_and_col_shifts(tmp_path):
+    book = tmp_path / "links.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for r in range(1, 6):
+        c = ws.cell(r, 1, f"site{r}.example")
+        c.hyperlink = f"https://site{r}.example/"
+    wb.save(book)
+
+    # delete row 2
+    run("xlsx_edit.py", book, "--sheet", "Data", "--delete-rows", "2")
+    reloaded = load_workbook(book)["Data"]
+    expected = [
+        (1, "site1.example", "https://site1.example/"),
+        (2, "site3.example", "https://site3.example/"),
+        (3, "site4.example", "https://site4.example/"),
+        (4, "site5.example", "https://site5.example/"),
+        (5, None, None),
+    ]
+    for row_idx, exp_val, exp_target in expected:
+        cell = reloaded.cell(row_idx, 1)
+        assert cell.value == exp_val
+        target = cell.hyperlink.target if cell.hyperlink else None
+        assert target == exp_target
+
+    # insert rows at row 2
+    run("xlsx_edit.py", book, "--sheet", "Data", "--insert-rows", "2:2")
+    reloaded_ins = load_workbook(book)["Data"]
+    assert reloaded_ins.cell(1, 1).value == "site1.example"
+    assert reloaded_ins.cell(1, 1).hyperlink.target == "https://site1.example/"
+    assert reloaded_ins.cell(2, 1).value is None
+    assert reloaded_ins.cell(2, 1).hyperlink is None
+    assert reloaded_ins.cell(3, 1).value is None
+    assert reloaded_ins.cell(3, 1).hyperlink is None
+    assert reloaded_ins.cell(4, 1).value == "site3.example"
+    assert reloaded_ins.cell(4, 1).hyperlink.target == "https://site3.example/"
+
+    # column deletion with shifted hyperlink
+    grid_book = tmp_path / "grid_links.xlsx"
+    wb_grid = Workbook()
+    ws_grid = wb_grid.active
+    ws_grid.title = "Grid"
+    ws_grid.cell(1, 1, "col_a").hyperlink = "https://example.com/a"
+    ws_grid.cell(1, 2, "col_b").hyperlink = "https://example.com/b"
+    wb_grid.save(grid_book)
+
+    run("xlsx_edit.py", grid_book, "--sheet", "Grid", "--delete-cols", "1")
+    reloaded_grid = load_workbook(grid_book)["Grid"]
+    shifted_cell = reloaded_grid.cell(1, 1)
+    assert shifted_cell.value == "col_b"
+    assert shifted_cell.hyperlink is not None
+    assert shifted_cell.hyperlink.target == "https://example.com/b"
+    assert reloaded_grid.cell(1, 2).hyperlink is None
+
+
+def test_restructure_realigns_and_rewrites_hyperlinks(tmp_path):
+    book = tmp_path / "restruct_links.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for r in range(1, 6):
+        c = ws.cell(r, 1, f"item_{r}")
+        c.hyperlink = f"https://items.example/{r}"
+    idx_sheet = wb.create_sheet(title="Index")
+    idx_cell = idx_sheet.cell(1, 1, "link to item 4")
+    idx_cell.hyperlink = "Data!A4"
+    idx_cell.hyperlink.location = "Data!A4"
+    idx_cell.hyperlink.target = None
+
+    idx_del = idx_sheet.cell(2, 1, "link to item 2")
+    idx_del.hyperlink = "Data!A2"
+    idx_del.hyperlink.location = "Data!A2"
+    idx_del.hyperlink.target = None
+    wb.save(book)
+
+    proc = run("xlsx_restructure.py", book, "--sheet", "Data", "--delete-rows", "2")
+    report = json.loads(proc.stdout)
+    assert report["ok"] is True
+    assert "hyperlinks" in report
+    assert any(h["cell"] == "A1" and h["to"] == "Data!A3" for h in report["hyperlinks"])
+    assert any(h["cell"] == "A2" and h["to"] == "Data!#REF!" for h in report["hyperlinks"])
+
+    reloaded = load_workbook(book)
+    assert reloaded["Data"].cell(2, 1).value == "item_3"
+    assert reloaded["Data"].cell(2, 1).hyperlink.target == "https://items.example/3"
+    assert reloaded["Data"].cell(5, 1).value is None
+    assert reloaded["Data"].cell(5, 1).hyperlink is None
+    assert reloaded["Index"].cell(1, 1).hyperlink.location == "Data!A3"
+    assert reloaded["Index"].cell(2, 1).hyperlink.location == "Data!#REF!"
+
+
+# ---------------------------------------------------------------------------
 # Headless recalculation (xlsx_recalc.py) — branches on soffice presence
 # ---------------------------------------------------------------------------
 
