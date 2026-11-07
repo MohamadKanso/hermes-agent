@@ -1,5 +1,6 @@
 # run log
 
+2026-11-07 18:20 utc | pr-upkeep | 38 open prs, nothing updated since the 15:20 run (latest activity 12:59), none merged or closed in the last 3h, nothing pushed or queued, drafts 131702 133218 135467 still left for the owner
 2026-11-07 15:20 utc | pr-upkeep | 38 open prs, all mergeable (blocked on review only), no failing ci, no new reviews or comments since last run, linked issues all still open, none merged or closed in the last 3h, nothing pushed or queued, drafts 131702 133218 135467 still left for the owner
 2026-11-07 15:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, all 6 issues (145268 145545 145820 146059 146435 147781) still open and unassigned with no closing prs, merge check not possible again (shallow checkout has no shared history with the fork branches), poster still not opening prs, nothing pushed to fork
 2026-11-07 09:20 utc | pr-upkeep | 38 open prs all mergeable, no failing ci, no changes requested, no open comments newer than commits, no dead issues, nothing pushed or queued, drafts 131702 133218 135467 left alone (ci not run yet / 135467 flagged dup of 135466)
