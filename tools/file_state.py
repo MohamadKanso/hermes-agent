@@ -17,10 +17,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-# (mtime, read_ts, partial). partial=True when read_file returned a windowed
-# view (offset > 1 or limit < total_lines) — a later write should still warn
-# so the model re-reads in full.
-ReadStamp = tuple[float, float, bool]
+# (mtime, read_ts, partial, reason). partial=True when read_file returned a windowed
+# view (offset > 1 or limit < total_lines), char budget truncation, redaction, etc.
+# so a later write can name the real cause.
+ReadStamp = tuple[float, float, bool, Optional[str]]
 
 # Bounded so long sessions don't accumulate unbounded state.
 _MAX_PATHS_PER_AGENT = 4096
@@ -94,21 +94,22 @@ class FileStateRegistry:
                     self._path_lock_users.pop(resolved, None)
                     self._path_locks.pop(resolved, None)
 
-    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool) -> None:
+    def _stamp(self, task_id: str, resolved: str, mtime: float, now: float, partial: bool,
+               reason: Optional[str] = None) -> None:
         """Caller holds ``_state_lock``."""
         agent_reads = self._reads[task_id]
-        agent_reads[resolved] = (float(mtime), now, bool(partial))
+        agent_reads[resolved] = (float(mtime), now, bool(partial), reason)
         _evict_oldest(agent_reads, _MAX_PATHS_PER_AGENT)
 
     def record_read(self, task_id: str, resolved: str, *, partial: bool = False,
-                    mtime: Optional[float] = None) -> None:
+                    mtime: Optional[float] = None, reason: Optional[str] = None) -> None:
         if _disabled():
             return
         mtime = _mtime_or_none(resolved) if mtime is None else mtime
         if mtime is None:
             return
         with self._state_lock:
-            self._stamp(task_id, resolved, mtime, time.time(), partial)
+            self._stamp(task_id, resolved, mtime, time.time(), partial, reason)
 
     def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None) -> None:
         """Record a successful write: global last-writer AND this agent's own
@@ -122,7 +123,7 @@ class FileStateRegistry:
         with self._state_lock:
             self._last_writer[resolved] = (task_id, now)
             _evict_oldest(self._last_writer, _MAX_GLOBAL_WRITERS)
-            self._stamp(task_id, resolved, mtime, now, False)
+            self._stamp(task_id, resolved, mtime, now, False, None)
 
     def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
         """Model-facing warning if this write would be stale, else ``None``. Severity
@@ -157,16 +158,33 @@ class FileStateRegistry:
                         "Re-read the file before writing.")
 
         if stamp is not None:
-            read_mtime, _read_ts, partial = stamp
+            read_mtime, _read_ts, partial, *rest = stamp
+            reason = rest[0] if rest else None
             if current_mtime != read_mtime:
                 return (
                     f"{resolved} was modified since you last read it "
                     "on disk (external edit or unrecorded writer). "
                     "Re-read the file before writing.")
             if partial:
+                if reason == "unstable read":
+                    return (
+                        f"{resolved} was read while its contents or metadata were changing on disk "
+                        "(unstable read). re-read the file, or use patch, before overwriting it.")
+                if reason == "redacted content":
+                    return (
+                        f"{resolved} was last read with sensitive content redacted "
+                        "(redacted content). avoid overwriting redacted files, or use patch for targeted edits.")
+                if reason == "truncated lines":
+                    return (
+                        f"{resolved} was last read with lines clamped to the line-length limit "
+                        "(truncated lines). inspect the file, or use patch for targeted edits, before overwriting it.")
+                if reason == "character budget":
+                    return (
+                        f"{resolved} was last read with output cut off by the character budget "
+                        "(character budget). read the remaining sections, or use patch, before overwriting it.")
                 return (
                     f"{resolved} was last read with offset/limit pagination "
-                    "(partial view). Read the remaining pages, or use patch, "
+                    "(partial view). read the remaining pages, or use patch, "
                     "before overwriting it.")
             return None
 
@@ -224,9 +242,10 @@ def get_registry() -> FileStateRegistry:
     return _registry
 
 
-# Convenience wrappers (short names used at call sites).
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+# convenience wrappers (short names used at call sites).
+def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False,
+                mtime: Optional[float] = None, reason: Optional[str] = None) -> None:
+    _registry.record_read(task_id, str(resolved_or_path), partial=partial, mtime=mtime, reason=reason)
 
 
 def note_write(task_id: str, resolved_or_path: str | Path) -> None:

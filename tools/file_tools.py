@@ -495,6 +495,18 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         _mark_full_write_baseline(str(_resolved), task_id)
         _update_read_timestamp(str(_resolved), task_id)
         file_state.record_read(task_id, str(_resolved))
+    else:
+        is_budget_truncated = result_dict.get("truncated_by") == "bytes"
+        is_truncated_lines = truncated_lines or bool(result_dict.get("truncated_lines"))
+        if redacted:
+            extracted_reason = "redacted content"
+        elif is_truncated_lines:
+            extracted_reason = "truncated lines"
+        elif is_budget_truncated:
+            extracted_reason = "character budget"
+        else:
+            extracted_reason = "pagination"
+        file_state.record_read(task_id, str(_resolved), partial=True, reason=extracted_reason)
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -533,7 +545,9 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
-                            redacted: bool = False, end_line: int | None = None,
+                            redacted: bool = False, truncated_lines: bool = False,
+                            budget_truncated: bool = False,
+                            end_line: int | None = None,
                             total_lines=None, version_before=None, snapshot=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
@@ -569,9 +583,14 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             if not complete:
                 complete = not partial
                 if partial and end_line is not None:
-                    complete, redacted = _note_read_coverage(
-                        task_data, resolved_str, version, offset, end_line, total_lines, redacted)
-                complete = complete and not redacted
+                    complete, cov_redacted, cov_truncated = _note_read_coverage(
+                        task_data, resolved_str, version, offset, end_line, total_lines,
+                        redacted, truncated_lines)
+                    if cov_redacted:
+                        redacted = True
+                    if cov_truncated:
+                        truncated_lines = True
+                complete = complete and not (redacted or truncated_lines)
             if complete:
                 baselines[resolved_str] = version
                 task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
@@ -582,8 +601,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             task_data["dedup_generation_reads"].discard(dedup_key)
         _cap_read_tracker_data(task_data)
 
+    partial_reason = None
+    if not complete:
+        if not stable:
+            partial_reason = "unstable read"
+        elif redacted:
+            partial_reason = "redacted content"
+        elif truncated_lines:
+            partial_reason = "truncated lines"
+        elif budget_truncated:
+            partial_reason = "character budget"
+        else:
+            partial_reason = "pagination"
+
     try:
-        file_state.record_read(task_id, resolved_str, partial=not complete)
+        file_state.record_read(task_id, resolved_str, partial=not complete, reason=partial_reason)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -699,7 +731,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # with a next_offset instead of rejecting.
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
+        budget_truncated = False
         if len(result.content or "") > max_chars:
+            budget_truncated = True
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
@@ -733,9 +767,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             end_line = offset + limit - 1
             if isinstance(total_lines, int) and total_lines > 0:
                 end_line = min(end_line, total_lines)
+        budget_truncated = budget_truncated or (result_dict.get("truncated_by") == "bytes")
+        is_truncated_lines = bool(result_dict.get("truncated_lines"))
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted or bool(result_dict.get("truncated_lines")),
+                                        redacted=redacted,
+                                        truncated_lines=is_truncated_lines,
+                                        budget_truncated=budget_truncated,
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
                                         snapshot=getattr(result, "_snapshot", None))

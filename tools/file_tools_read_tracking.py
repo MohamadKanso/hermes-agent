@@ -355,18 +355,15 @@ _READ_COVERAGE_RANGES_CAP = 256
 
 
 def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: int, end: int,
-                        total_lines, redacted: bool) -> tuple[bool, bool]:
-    """Merge the page ``start..end`` into this task's coverage of *resolved* and return
-    ``(complete, redacted_any)``: whether pages taken at this same *version* now reach from
-    line 1 to *total_lines*, and whether any of them came back redacted. A file too large
-    for one read_file page (>2000 lines / the char budget) can only ever be seen this
-    way, so paging through it must count as a whole-file read. A new version restarts the
-    coverage (the earlier pages describe a file that no longer exists). Lock must be held."""
+                        total_lines, redacted: bool,
+                        truncated_lines: bool = False) -> tuple[bool, bool, bool]:
+    """merge page start..end into coverage of resolved and return (complete, redacted, truncated)."""
     coverage = task_data.setdefault("read_coverage", {})
     entry = coverage.get(resolved)
     if entry is None or entry["version"] != version or len(entry["ranges"]) > _READ_COVERAGE_RANGES_CAP:
-        entry = coverage[resolved] = {"version": version, "ranges": [], "redacted": False}
+        entry = coverage[resolved] = {"version": version, "ranges": [], "redacted": False, "truncated_lines": False}
     entry["redacted"] = entry["redacted"] or redacted
+    entry["truncated_lines"] = entry.get("truncated_lines", False) or truncated_lines
     merged: list[tuple[int, int]] = []
     for s, e in sorted(entry["ranges"] + [(start, end)]):
         if merged and s <= merged[-1][1] + 1:
@@ -376,7 +373,7 @@ def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: i
     entry["ranges"] = merged
     complete = (isinstance(total_lines, int) and total_lines > 0
                 and merged[0][0] <= 1 and merged[0][1] >= total_lines)
-    return complete, entry["redacted"]
+    return complete, entry["redacted"], entry["truncated_lines"]
 
 
 def _read_mtime_drifted(filepath: str, task_id: str) -> bool:
