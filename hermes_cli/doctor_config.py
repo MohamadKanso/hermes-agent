@@ -249,10 +249,15 @@ def _provider_has_credentials(runtime_provider: str) -> bool:
 
 
 def _validate_model_config(config_path, issues: list) -> None:
-    """Validate model.provider / model.default against the provider registry (raw file)."""
-    # Detect stale root-level model keys (known bug source — PR #4329)
-    from hermes_cli.config import read_user_config_raw
-    cfg = read_user_config_raw(config_path)
+    """validate model.provider and model.default against the provider registry (#150629)"""
+    # behavioral reads take load_config_readonly so managed scope definitions are visible (#150629)
+    from pathlib import Path
+    from hermes_cli.config import get_config_path, load_config_readonly, read_user_config_raw
+    cfg = (
+        load_config_readonly()
+        if config_path is None or Path(config_path).resolve() == get_config_path().resolve()
+        else read_user_config_raw(config_path)
+    )
     model_section = cfg.get("model") or {}
     provider_raw = (model_section.get("provider") or "").strip()
     provider = provider_raw.lower()
@@ -306,13 +311,18 @@ def _validate_model_config(config_path, issues: list) -> None:
 
 
 def _validate_auxiliary_config(config_path, issues: list) -> None:
-    """Resolve every routed ``auxiliary.<task>`` block through the real entry point the tasks use and report
-    the ones that fail — an unresolvable block otherwise silently runs the task on the main model (#116055)."""
-    from hermes_cli.config import read_user_config_raw
+    """validate auxiliary task routing resolving unresolvable blocks (#116055, #150629)"""
+    from pathlib import Path
+    from hermes_cli.config import get_config_path, load_config_readonly, read_user_config_raw
     from hermes_cli.left_core_migration import provider_install_hint
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
-    aux = read_user_config_raw(config_path).get("auxiliary")
+    cfg = (
+        load_config_readonly()
+        if config_path is None or Path(config_path).resolve() == get_config_path().resolve()
+        else read_user_config_raw(config_path)
+    )
+    aux = cfg.get("auxiliary")
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
               if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
     ok = []
@@ -338,9 +348,11 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
+    from hermes_cli.config import get_config_path
     from hermes_cli.config_backend import config_exists, get_config_backend
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
-    config_path = HERMES_HOME / 'config.yaml'
+    effective_path = get_config_path()
+    config_path = effective_path if effective_path.exists() else (HERMES_HOME / 'config.yaml')
     backend = get_config_backend()
     if not backend.supports_file_tooling() and not _check_config_backend(backend, HERMES_HOME, f):
         return

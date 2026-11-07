@@ -1558,6 +1558,70 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
 
 
+def test_doctor_model_config_honors_managed_scope_provider(tmp_path, monkeypatch):
+    """managed scope provider definition is recognized by model validation (#150629)"""
+    import hermes_yaml as yaml
+    from hermes_cli import doctor_config
+
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(home_dir))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+
+    user_cfg = home_dir / "config.yaml"
+    user_cfg.write_text(yaml.safe_dump({
+        "model": {"provider": "corp-internal", "default": "corp-model"}
+    }))
+
+    managed_cfg = managed_dir / "config.yaml"
+    managed_cfg.write_text(yaml.safe_dump({
+        "providers": {
+            "corp-internal": {
+                "base_url": "https://corp.internal/v1",
+                "api_key": "corp-key",
+            }
+        }
+    }))
+
+    issues = []
+    doctor_config._validate_model_config(user_cfg, issues)
+    assert issues == []
+
+
+def test_doctor_auxiliary_config_validates_managed_scope_blocks(tmp_path, monkeypatch):
+    """unresolvable auxiliary block defined in managed scope is caught by doctor (#150629)"""
+    import hermes_yaml as yaml
+    from hermes_cli import doctor_config
+
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(home_dir))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+
+    user_cfg = home_dir / "config.yaml"
+    user_cfg.write_text(yaml.safe_dump({"model": {"provider": "auto"}}))
+
+    managed_cfg = managed_dir / "config.yaml"
+    managed_cfg.write_text(yaml.safe_dump({
+        "auxiliary": {
+            "background_review": {"provider": "no-such-managed-provider", "model": "m"}
+        }
+    }))
+
+    issues = []
+    doctor_config._validate_auxiliary_config(user_cfg, issues)
+    assert len(issues) == 1
+    assert "auxiliary.background_review" in issues[0]
+    assert "no-such-managed-provider" in issues[0]
+
+
+
 @pytest.mark.platforms("macos")
 class TestMacOSTCCGrants:
     """macOS TCC grant persistence check (#86385): a cdhash-pinned DR (pre-#73681
