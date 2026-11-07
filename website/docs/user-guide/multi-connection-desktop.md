@@ -66,7 +66,12 @@ Rules worth knowing:
   removed or unavailable saved gateway falls back to Primary.
 - **Test** probes the connection's own HTTP *and* WebSocket legs, so a pass
   (the *"Reachable"* toast) means chat will actually work — not just that the
-  host pinged.
+  host pinged. In the Webapp, **Test** on an SSH row opens the same managed
+  tunnel the gateway uses to reach that host, which starts (or reuses)
+  `hermes serve` on the remote machine without cleaning it up afterwards. It
+  stops when you remove the connection or stop the gateway, or on its own after
+  the remote idle timeout (`dashboard.ssh_isolated_idle_grace_s`, 15 minutes by
+  default) while no client is connected and no work is running.
 - **Duplicates are rejected when you save**: there is only ever one **local**
   entry; **remote** and **cloud** entries are deduplicated on the normalized
   URL (trimmed, trailing slashes stripped, lowercased — and across both

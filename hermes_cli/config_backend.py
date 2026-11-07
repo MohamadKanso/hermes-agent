@@ -355,7 +355,7 @@ def _backend_for(kind: str) -> ConfigBackend:
         try:
             module = importlib.import_module(name)
         except ImportError as exc:
-            if exc.name not in (name, _BACKENDS_PACKAGE, "plugins"):
+            if exc.name != name and not name.startswith(f"{exc.name}."):
                 raise  # the backend exists but is broken: show that, not "unknown"
             raise ConfigBackendUnavailable(unknown) from exc
     get_backend = getattr(module, "get_backend", None)
@@ -397,16 +397,33 @@ def local_file_layer(config_path: PathLike) -> tuple[ConfigBackend, Path]:
     return _ExplicitFile(path), path.parent
 
 
+def repair_surrogates(val: Any) -> Any:
+    """recursively re-encodes surrogate pairs into valid unicode characters, dropping lone surrogates."""
+    if isinstance(val, str):
+        try:
+            val.encode("utf-8")
+            return val
+        except UnicodeEncodeError:
+            return val.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+    if isinstance(val, dict):
+        return {repair_surrogates(k): repair_surrogates(v) for k, v in val.items()}
+    if isinstance(val, list):
+        return [repair_surrogates(item) for item in val]
+    return val
+
+
 def read_config_doc(config_path: PathLike) -> Any:
     """Parsed root of a config file (None when empty); raises like ``open`` + ``fast_safe_load``."""
     backend, home = _route(config_path)
-    return backend.read_user_doc(home)
+    doc = backend.read_user_doc(home)
+    return repair_surrogates(doc) if doc is not None else None
 
 
 def read_config_doc_readonly(config_path: PathLike) -> Any:
     """Signature-cached :func:`read_config_doc`; the result is shared — never mutate it."""
     backend, home = _route(config_path)
-    return backend.read_user_doc_readonly(home)
+    doc = backend.read_user_doc_readonly(home)
+    return repair_surrogates(doc) if doc is not None else None
 
 
 def config_version(config_path: PathLike) -> tuple[Any, ...]:

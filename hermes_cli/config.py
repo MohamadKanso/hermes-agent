@@ -48,7 +48,7 @@ from utils import atomic_replace, fast_safe_load, file_cache_version, file_signa
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
-    get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
+    get_config_backend, probe_config_readable, read_config_doc, repair_surrogates, supports_file_tooling,
     write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
@@ -194,7 +194,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME", "SMS_HOME_CHANNEL", "SMS_HOME_CHANNEL_NAME",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET", "DINGTALK_HOME_CHANNEL", "DINGTALK_HOME_CHANNEL_NAME",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
-    "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME", "YUANBAO_HOME_CHANNEL", "YUANBAO_HOME_CHANNEL_NAME",
+    "FEISHU_HOME_CHANNEL", "FEISHU_HOME_CHANNEL_NAME",
     "WECOM_BOT_ID", "WECOM_SECRET", "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET",
     "WECOM_CALLBACK_AGENT_ID", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
     "WECOM_CALLBACK_HOST", "WECOM_CALLBACK_PORT", "WECOM_HOME_CHANNEL", "WECOM_HOME_CHANNEL_NAME",
@@ -476,8 +476,8 @@ def get_env_path() -> Path:
 
 
 def get_project_root() -> Path:
-    """Get the project installation directory."""
-    return Path(__file__).parent.parent.resolve()
+    from hermes_cli._startup_fast import project_root_str
+    return Path(project_root_str())
 
 
 def _secure_dir(path):
@@ -1783,7 +1783,7 @@ def _worker_config_snapshot() -> Optional[dict[str, Any]]:
     try:
         from agent.safe_worker_policy import worker_config_snapshot
     except ModuleNotFoundError as exc:
-        if exc.name != "agent":
+        if exc.name != "agent" and not "agent".startswith(f"{exc.name}."):
             raise
         return None
     return worker_config_snapshot()
@@ -2939,7 +2939,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # Platform configs — PlatformConfig dataclass + dynamic extras
     "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
-    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao",
+    "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot",
     "email", "sms", "dingtalk",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
@@ -3109,6 +3109,9 @@ _SCALAR_WORDS = {
     # YAML null. Many DEFAULT_CONFIG leaves are "null/absent = off"; without this,
     # ``config set X null`` stored the truthy string "null" and the feature could never be cleared.
     'null': None, 'none': None, '~': None}
+
+
+_repair_surrogates = repair_surrogates
 
 
 def _coerce_config_set_value(key: str, value: str) -> Any:
@@ -3373,7 +3376,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
-    value = _coerce_config_set_value(key, value)
+    value = _repair_surrogates(_coerce_config_set_value(key, value))
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")
