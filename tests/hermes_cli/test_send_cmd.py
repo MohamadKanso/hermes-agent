@@ -459,3 +459,123 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert str(home / "channel_directory.json") in out
     assert "~/.hermes" not in out
+
+
+def test_load_hermes_env_restores_cached_secret_sources(tmp_path, monkeypatch):
+    """ensure external secret sources win over raw .env placeholders."""
+    import os
+    import hermes_cli.env_loader as el
+
+    home = tmp_path / "profile_test"
+    home.mkdir()
+    (home / ".env").write_text("DISCORD_BOT_TOKEN=placeholder\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    home_key = str(home.resolve())
+    monkeypatch.setitem(el._SECRET_SOURCE_RESTORE_BY_HOME, home_key, {"DISCORD_BOT_TOKEN": "real_token_from_source"})
+
+    from importlib import reload
+    import hermes_cli.config as _hc_config
+    reload(_hc_config)
+
+    send_cmd._load_hermes_env()
+    assert os.environ.get("DISCORD_BOT_TOKEN") == "real_token_from_source"
+
+
+def test_restore_profile_secret_sources_caching_and_unconfigured(tmp_path, monkeypatch):
+    """ensure restore helper caches results and does not repeatedly hydrate unconfigured homes."""
+    import hermes_cli.env_loader as el
+
+    home = tmp_path / "empty_profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    el.reset_secret_source_cache(home)
+
+    target = {}
+    restores = el.restore_profile_secret_sources(home, target)
+    assert restores == {}
+    assert target == {}
+
+    home_key = str(home.resolve())
+    assert home_key in el._APPLIED_HOMES
+    assert home_key in el._SECRET_SOURCE_RESTORE_BY_HOME
+
+
+def test_cmd_send_restores_authoritative_secrets_before_sending(tmp_path, monkeypatch, fake_tool):
+    """ensure cmd_send loads authoritative secret sources before running tool."""
+    import os
+    import sys
+    import types
+    import hermes_cli.env_loader as el
+
+    home = tmp_path / "profile_send"
+    home.mkdir()
+    (home / ".env").write_text("DISCORD_BOT_TOKEN=placeholder\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    home_key = str(home.resolve())
+    monkeypatch.setitem(el._SECRET_SOURCE_RESTORE_BY_HOME, home_key, {"DISCORD_BOT_TOKEN": "real_secret_token"})
+
+    from importlib import reload
+    import hermes_cli.config as _hc_config
+    reload(_hc_config)
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: ["discord"])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+
+    args = _parse(["--to", "discord:#general", "hello world"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+
+    assert os.environ.get("DISCORD_BOT_TOKEN") == "real_secret_token"
+    assert len(fake_tool.calls) == 1
+    assert fake_tool.calls[0]["action"] == "send"
+
+
+def test_send_cmd_secrets_command_overrides_env_placeholder(tmp_path, monkeypatch, fake_tool):
+    """ensure secrets.command resolves and beats .env placeholder on hermes send."""
+    import os
+    import stat
+    import sys
+    import types
+    import hermes_cli.env_loader as el
+
+    home = tmp_path / "profile_cmd_secrets"
+    home.mkdir()
+    (home / ".env").write_text("DISCORD_BOT_TOKEN=placeholder_from_dotenv\n", encoding="utf-8")
+
+    helper = tmp_path / "helper.sh"
+    helper.write_text("#!/bin/sh\nprintf 'DISCORD_BOT_TOKEN=token_from_command_helper\\n'\n", encoding="utf-8")
+    helper.chmod(helper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  command:\n"
+        "    enabled: true\n"
+        "    override_existing: true\n"
+        f"    command: {helper}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    el.reset_secret_source_cache(home)
+
+    from importlib import reload
+    import hermes_cli.config as _hc_config
+    reload(_hc_config)
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: ["discord"])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+
+    args = _parse(["--to", "discord:#alerts", "test message"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+
+    assert os.environ.get("DISCORD_BOT_TOKEN") == "token_from_command_helper"
+    assert len(fake_tool.calls) == 1
+    assert fake_tool.calls[0]["action"] == "send"
+
