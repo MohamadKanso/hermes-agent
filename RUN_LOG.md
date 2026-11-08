@@ -1,5 +1,6 @@
 # run log
 
+2026-11-08 07:15 utc | new-fix | outbox still has 6 unopened prs so no new fix, spot-checked 145268 145820 147781 still open and unassigned with no closing prs, merge check skipped (fork branch fetch timed out), poster still not opening prs, nothing pushed to fork
 2026-11-08 06:25 utc | pr-upkeep | 38 open prs, all mergeable, no ci failures, no changes requested, no new human asks newer than commits (134756 thread already resolved), linked issues all open, nothing merged or closed, nothing pushed or queued, drafts 131702 133218 135467 left for the owner (135467 flagged dup of #135466 which is still open)
 2026-11-08 03:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, spot-checked 145268 145820 146059 still open and unassigned with no closing prs, merge check skipped (shallow checkout), poster still not opening prs, nothing pushed to fork
 2026-11-08 00:13 utc | pr-upkeep | 38 open prs, all mergeable (blocked on review only), no failing ci, no changes requested, no human comments newer than commits that ask for code, linked issues all still open, nothing merged or closed, nothing pushed or queued, drafts 131702 133218 135467 still left for the owner
