@@ -175,6 +175,25 @@ def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
 
 
+def restore_profile_secret_sources(
+    hermes_home: str | os.PathLike,
+    target: dict[str, str] | os._Environ | None = None,
+) -> dict[str, str]:
+    """restore authoritative external secrets over raw .env for one profile."""
+    home = Path(hermes_home)
+    home_key = str(home.resolve())
+    with _SECRET_SOURCE_CACHE_LOCK:
+        if home_key in _SECRET_SOURCE_RESTORE_BY_HOME:
+            restores = dict(_SECRET_SOURCE_RESTORE_BY_HOME[home_key])
+        else:
+            _hydrate_profile_secret_sources(home)
+            restores = dict(_SECRET_SOURCE_RESTORE_BY_HOME.get(home_key, {}))
+        if target is not None:
+            for name, value in restores.items():
+                target[str(name)] = str(value)
+        return restores
+
+
 def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Resolve one profile's configured sources without mutating ``os.environ``: multiplex gateways route
     turns to profiles that never ran the process-global dotenv path, so resolve against a private mapping
@@ -206,6 +225,8 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     except Exception:
         return {}
     if not cfg:
+        _APPLIED_HOMES.add(home_key)
+        _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {}
         return {}
 
     try:
@@ -256,6 +277,8 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
+        n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
     return dict(values)
 
 

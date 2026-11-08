@@ -176,6 +176,12 @@ def _load_hermes_env() -> None:
                 _load_dotenv_with_fallback(env_path, override=True)
             except Exception:
                 pass
+        # restore external secret sources over raw .env so placeholders do not clobber resolved secrets
+        try:
+            from hermes_cli.env_loader import restore_profile_secret_sources
+            restore_profile_secret_sources(home, target)
+        except Exception:
+            pass
 
     # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
     # into the environment, without overriding existing values.
