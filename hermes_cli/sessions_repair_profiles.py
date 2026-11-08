@@ -294,6 +294,9 @@ class RepairPlan:
                 continue
             if key_profile == store.profile and not self.multiplexes:
                 continue  # a standalone gateway's own index lives in its own store
+            if row["scope"] == "" and key_profile == store.profile:
+                # local session routes live beside their receipt; the gateway never reads them
+                continue
             routing_store = self.routing_store
             if routing_store is None:
                 continue

@@ -408,3 +408,47 @@ def test_ledger_rows_that_appear_after_the_scan_still_block_the_copy(homes, monk
     finally:
         root.close()
         acme.close()
+
+
+def test_a_local_sessions_own_route_is_not_a_routing_stray(homes, monkeypatch):
+    """a named profile's local session keeps its scope='' route beside its receipt in the
+    profile's own store: advance_local_target reads it on that connection, so moving it to the
+    default store refused every later compression/reset with admission_conflict. under
+    multiplexing only the copied gateway-index rows (#66887) are strays."""
+    monkeypatch.setattr("hermes_cli.sessions_repair_profiles._gateway_multiplexes", lambda root: True)
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    local_key = "agent:acme:local:dm:local-abc"
+    gateway_key = "agent:acme:telegram:dm:200"
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        acme.save_gateway_routing_entry(local_key, json.dumps({"session_key": local_key, "session_id": "local-abc"}),
+                                        scope="")
+        acme.save_gateway_routing_entry(gateway_key, json.dumps({"session_key": gateway_key, "session_id": "ok-acme"}),
+                                        scope=str((homes["default"] / "sessions").resolve()))
+    finally:
+        acme.close()
+
+    strays = {f["subject"] for f in _report()["findings"] if f["kind"] == "routing_stray"}
+
+    assert any(s.startswith(gateway_key) for s in strays)
+    assert not any(s.startswith(local_key) for s in strays)
+
+    assert _run(apply=True) == 0
+    assert _run(apply=True) == 0
+
+    root = SessionDB(homes["default"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        acme_routes = acme.list_gateway_routing_rows()
+        root_routes = root.list_gateway_routing_rows()
+
+        # local session route stays untouched in acme
+        assert any(r["session_key"] == local_key and r["scope"] == "" for r in acme_routes)
+        # stray gateway route was migrated out of acme into default
+        assert not any(r["session_key"] == gateway_key for r in acme_routes)
+        assert any(r["session_key"] == gateway_key for r in root_routes)
+        assert not any(r["session_key"] == local_key for r in root_routes)
+    finally:
+        root.close()
+        acme.close()
+
