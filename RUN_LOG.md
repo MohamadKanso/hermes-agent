@@ -1,5 +1,7 @@
 # run log
 
+2026-11-08 21:20 utc | pr-upkeep | 5 open prs, only 151364 changed (opened 15:23, no reviews, comments or checks yet, issue 145268 still open), others untouched since 11-07 or earlier, no merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-08 21:20 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-08 15:22 utc | outbox poster | opened https://github.com/NousResearch/hermes-agent/pull/151364;linked #151364 on issue #145268;pr waiting: 5 open, github allows 5
 2026-11-08 12:15 utc | pr-upkeep | 38 open prs, none updated since 11-07 12:59 so no new reviews or comments, mergeability reads unknown for all this run (no dirty seen), nothing merged or closed, nothing pushed or queued, drafts 131702 133218 135467 still left for the owner
 2026-11-08 11:10 utc | new-fix | outbox still has 6 unopened prs so no new fix, spot-checked 145545 146059 146435 still open and unassigned with no closing prs, merge check skipped (shallow checkout, fork branch fetch times out), poster still not opening prs, nothing pushed to fork
