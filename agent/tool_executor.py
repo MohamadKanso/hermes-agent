@@ -691,7 +691,7 @@ def _dispatch_authorized_once(
 
     Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
-    path so later-ordered workers keep moving; blocked calls advance it without a callback.
+    path so later-ordered workers keep moving; blocked calls advance it with user-visible preflight.
     """
     def _advance_start_order(callback=None) -> None:
         if begin_execution is not None:
@@ -1045,7 +1045,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None, c
                     agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 
-def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
+def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool = False) -> None:
     """Fire ``tool_complete_callback`` then the ``tool.output_risk`` projection."""
     if agent.tool_complete_callback:
         try:
