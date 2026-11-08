@@ -1046,7 +1046,12 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
-        if exit_code is None or exit_code == 0:
+        if exit_code is None:
+            if isinstance(data, dict) and (data.get("error") or data.get("status") == "blocked"):
+                err_msg = data.get("error") or data.get("message") or "blocked"
+                return True, f" [{_trim_error(str(err_msg))}]"
+            return False, ""
+        if exit_code == 0:
             return False, ""
         if data.get("status") == "degraded":
             return True, _degraded_suffix(data)

@@ -36,6 +36,7 @@ from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
+from agent.prompt_cache_scope import conversation_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -690,7 +691,7 @@ def _dispatch_authorized_once(
 
     Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
-    path so later-ordered workers keep moving; blocked calls advance it without a callback.
+    path so later-ordered workers keep moving; blocked calls advance it with user-visible preflight.
     """
     def _advance_start_order(callback=None) -> None:
         if begin_execution is not None:
@@ -726,7 +727,7 @@ def _dispatch_authorized_once(
             guardrail_decision = None
 
     if block_body is not None or guardrail_decision is not None:
-        _advance_start_order()
+        _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index, checkpoint=False))
         state.blocked = True
         return _blocked_tool_result(
             agent, ref,
@@ -1004,7 +1005,7 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
         logging.debug("%s callback error: %s", label, callback_error)
 
 
-def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
+def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None, checkpoint: bool = True) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
     display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
@@ -1026,10 +1027,10 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
-            _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
+            _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args, tool_call_id=tool_call_id)
     _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
 
-    if not agent._checkpoint_mgr.enabled:
+    if not checkpoint or not agent._checkpoint_mgr.enabled:
         return
     with contextlib.suppress(Exception):
         if function_name in {"write_file", "patch"}:
@@ -1044,9 +1045,9 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
                     agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 
-def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
-    """Fire ``tool_complete_callback`` (unless blocked) then the ``tool.output_risk`` projection."""
-    if not blocked and agent.tool_complete_callback:
+def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool = False) -> None:
+    """Fire ``tool_complete_callback`` then the ``tool.output_risk`` projection."""
+    if agent.tool_complete_callback:
         try:
             display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
         except Exception as cb_err:
@@ -1164,13 +1165,14 @@ def _commit_tool_result(
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
 
-    if not blocked:
-        # ``tool.completed`` projects AFTER the canonical append + flush so resume can
-        # reconstruct the result even if the UI bridge dies mid-projection.
-        _safe_callback(
-            agent.tool_progress_callback, "Tool progress",
-            "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
-        )
+    # ``tool.completed`` projects AFTER the canonical append + flush so resume can
+    # reconstruct the result even if the UI bridge dies mid-projection.
+    _safe_callback(
+        agent.tool_progress_callback, "Tool progress",
+        "tool.completed", function_name, None, None,
+        duration=tool_duration, is_error=is_error or blocked, result=function_result,
+        tool_call_id=ref.call_id, status="blocked" if blocked else ("error" if is_error else "completed"),
+    )
     if isinstance(function_result, str) and len(function_result) >= _LARGE_TOOL_RESULT_TRIM_CHARS:
         agent._trim_after_tool_batch = True
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
@@ -1229,13 +1231,14 @@ def _preview(text: str, limit: int) -> str:
     return text[:limit] + "..." if len(text) > limit else text
 
 
-def _print_tool_completed(agent, index: int, tool_duration: float, result) -> None:
-    """Non-quiet ``✅ Tool N completed`` line (full result under verbose logging)."""
+def _print_tool_completed(agent, index: int, tool_duration: float, result, blocked: bool = False) -> None:
+    """Non-quiet ``✅ Tool N completed`` or ``✗ Tool N blocked`` line (full result under verbose logging)."""
+    mark, verb = ("✗", "blocked") if blocked else ("✅", "completed")
     if agent.verbose_logging:
-        print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s")
+        print(f"  {mark} Tool {index} {verb} in {tool_duration:.2f}s")
         print(agent._wrap_verbose("Result: ", result))
     else:
-        print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s - {_preview(result if isinstance(result, str) else str(result), agent.log_prefix_chars)}")
+        print(f"  {mark} Tool {index} {verb} in {tool_duration:.2f}s - {_preview(result if isinstance(result, str) else str(result), agent.log_prefix_chars)}")
 
 
 # ── Concurrent batch machinery ──────────────────────────────────────────────
@@ -1380,6 +1383,8 @@ class _ConcurrentBatch:
         if not blocked and not dispatched:
             ref.emit_post(agent, result, duration_ms=int(duration * 1000))
         is_error, _ = _detect_tool_failure(ref.name, result)
+        if blocked:
+            is_error = True
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", ref.name, duration, str(result)[:200])
         else:
@@ -1551,6 +1556,8 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
+            if blocked:
+                is_error = True
             effect_disposition = "none" if blocked else None
             if pc.parse_error is not None:
                 ref.emit_invalid_arguments(agent, r.result)
@@ -1568,7 +1575,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             cute_msg = _get_cute_tool_message_impl(ref.name, ref.args, tool_duration, result=display_function_result)
             agent._safe_print(f"  {cute_msg}")
         elif _tool_progress_enabled(agent):
-            _print_tool_completed(agent, i + 1, tool_duration, _multimodal_text_summary(display_function_result))
+            _print_tool_completed(agent, i + 1, tool_duration, _multimodal_text_summary(display_function_result), blocked=blocked)
 
         _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, blocked)
     return True
@@ -1716,6 +1723,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
+                conversation_id=conversation_id(agent),
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
@@ -1829,6 +1837,8 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     # Multimodal dict results (_multimodal=True) are not sliceable as strings.
     _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
     _is_error_result, _ = _detect_tool_failure(ref.name, function_result)
+    if managed.blocked:
+        _is_error_result = True
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
@@ -1850,7 +1860,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
 
     _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, managed.blocked)
     if _tool_progress_enabled(agent):
-        _print_tool_completed(agent, index, tool_duration, function_result)
+        _print_tool_completed(agent, index, tool_duration, function_result, blocked=bool(managed.blocked))
     return True
 
 
