@@ -1,5 +1,7 @@
 # run log
 
+2026-11-09 18:20 utc | pr-upkeep | 5 open prs, only 151364 changed (kvnloo comment offering an extra max_file_size_mb agent test, no review or ci, not a change request, fork branch fetch times out here so nothing could be test-verified), others untouched since 11-07 or earlier, no merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-09 18:20 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-09 12:10 utc | new-fix | open pr cap reached (5 open) and outbox still has 5 unopened prs so no new fix, nothing pushed to fork
 2026-11-09 09:15 utc | pr-upkeep | 5 open prs, none updated since the last run (newest 151364 at 11-08 19:23), no new reviews or comments or merges or closes, nothing pushed or queued, 4 pr lines still stuck in outbox
 2026-11-09 09:15 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
