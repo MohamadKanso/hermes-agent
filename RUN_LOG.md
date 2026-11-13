@@ -1,5 +1,7 @@
 # run log
 
+2026-11-13 09:20 utc | pr-upkeep | 5 open prs, nothing changed since the 11-12 21:20 run (newest activity still the owner's 11-09 21:39 reply on 151364), no reviews, ci or merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-13 09:20 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-12 21:20 utc | pr-upkeep | 5 open prs, nothing changed since the 11-12 09:20 run (newest activity still the owner's 11-09 21:39 reply on 151364), no reviews, ci or merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
 2026-11-12 21:20 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-12 10:20 utc | new-contribution | no new fix: open pr cap (5) reached and outbox still has 5 unopened pr lines, all 5 issues still open and unassigned, merge check vs main not possible (shallow checkout, unrelated histories), nothing pushed
