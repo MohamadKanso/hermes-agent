@@ -1,5 +1,7 @@
 # run log
 
+2026-11-14 09:20 utc | pr-upkeep | 5 open prs, nothing changed since the 11-13 21:20 run (newest activity still 11-09 21:39 on 151364), no reviews, ci or merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-14 09:20 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-13 21:20 utc | pr-upkeep | 5 open prs, nothing changed since the 09:20 run (no updates, reviews, ci or merges or closes on any of them), nothing pushed or queued, 5 pr lines still stuck in outbox
 2026-11-13 21:20 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-13 09:20 utc | pr-upkeep | 5 open prs, nothing changed since the 11-12 21:20 run (newest activity still the owner's 11-09 21:39 reply on 151364), no reviews, ci or merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
