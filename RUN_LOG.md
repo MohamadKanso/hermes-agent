@@ -1,5 +1,7 @@
 # run log
 
+2026-11-17 21:15 utc | pr-upkeep | 5 open prs, nothing changed since the earlier 11-17 run (newest activity still 134756 at 11-14 14:18), no new reviews, ci, merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-17 21:15 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-17 10:10 utc | new-contribution | no new fix: open pr cap reached (5 open) and outbox still has 5 unopened pr lines (one fix in flight rule), merge check vs main not possible (no fork branch checkout here), nothing pushed
 2026-11-17 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), nothing changed since the 11-16 21:20 run (newest activity still 134756 at 11-14 14:18), no new reviews, ci, conflicts, merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
 2026-11-17 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
