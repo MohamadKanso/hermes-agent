@@ -1,5 +1,7 @@
 # run log
 
+2026-11-18 21:10 utc | pr-upkeep | 5 open prs, nothing changed since the 09:35 run, no new reviews, comments, ci or conflicts (all mergeable, blocked on review only), nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-18 21:10 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-18 09:35 utc | pr-upkeep | 5 open prs, 151364 and 134756 had gone dirty after main moved, merged main into both and pushed to fork (151364 one conflict in agent_factory, tests pass, 134756 ported onto the new persistence layer since the old session store was removed, added count_exclude_sources through the protocol and sqlite store plus a contract test, 541 test files green, ruff clean), 134907 132418 116068 untouched and blocked on review only, linked issues all still open, no new reviews or comments, nothing queued, 5 pr lines still stuck in outbox
 2026-11-18 09:35 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-17 21:15 utc | pr-upkeep | 5 open prs, nothing changed since the earlier 11-17 run (newest activity still 134756 at 11-14 14:18), no new reviews, ci, merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
