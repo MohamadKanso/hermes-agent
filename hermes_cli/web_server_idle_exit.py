@@ -10,8 +10,8 @@ Two pieces, both scoped to the SSH-isolated case (a session token was handed ove
 
 * An ASGI wrapper counts accepted WebSocket connections (every dashboard WS route: /api/ws,
   /api/pty, /api/console, /api/pub, /api/events, /api/audio/speak-stream) without touching the
-  handlers. When the count has been zero for the grace window and no agent turn is running, the
-  watchdog asks uvicorn to exit gracefully (WAL checkpoint, exit 0). An indeterminate turn probe
+  handlers. When the count has been zero for the grace window and no work is pending, the
+  watchdog asks uvicorn to exit gracefully (WAL checkpoint, exit 0). An indeterminate probe
   fails closed: the backend stays up.
 * Loopback normally disables uvicorn's WS ping (a dead local client sends FIN/RST). Across an SSH
   tunnel the local socket is healthy while the far end is asleep, so pings are the only way to notice
@@ -65,6 +65,11 @@ class IdleClientTracker:
         with self._lock:
             return 0.0 if self._live else self._now() - self._last_client_at
 
+    def commit_if_idle(self, grace_s: float, commit: Callable[[], bool]) -> bool:
+        """Recheck the grace period and commit before a WebSocket can register as connected."""
+        with self._lock:
+            return not self._live and self._now() - self._last_client_at >= grace_s and commit()
+
 
 def wrap_asgi_with_ws_tracking(app, tracker: IdleClientTracker):
     """Count WebSocket sessions at the ASGI boundary: open on the ``websocket.accept`` send, close
@@ -103,7 +108,7 @@ def _session_work_in_flight(session: dict) -> bool:
 
 def busy_ledger() -> Optional[str]:
     """Name the ledger that holds work — ``"retirement_admission"``, ``"session:<id>"``,
-    ``"delegation"``, ``"cron:<job ids>"`` — ``""`` when every ledger is empty, ``None`` when one
+    ``"delegation"``, ``"cron:<job ids>"``, ``"process"`` — ``""`` when every ledger is empty, ``None`` when one
     cannot be read. The Desktop's idle probe reports this so a backend that will not retire says
     WHICH work it is protecting, instead of an opaque "turn in flight".
 
@@ -120,7 +125,8 @@ def busy_ledger() -> Optional[str]:
         if retirement.active_count():
             return "retirement_admission"
         with gateway._sessions_lock:
-            busy_sessions = [sid for sid, s in gateway._sessions.items() if _session_work_in_flight(s)]
+            sessions = tuple(gateway._sessions.items())
+            busy_sessions = [sid for sid, s in sessions if _session_work_in_flight(s)]
         if busy_sessions:
             return "session:" + ",".join(str(sid) for sid in busy_sessions)
         from tools.async_delegation import active_count
@@ -128,7 +134,16 @@ def busy_ledger() -> Optional[str]:
         if active_count():
             return "delegation"
         running_jobs = get_running_job_ids()
-        return "cron:" + ",".join(sorted(running_jobs)) if running_jobs else ""
+        if running_jobs:
+            return "cron:" + ",".join(sorted(running_jobs))
+        from tools.process_registry import process_registry
+
+        # desktop routes completion notices through its session pollers
+        if process_registry.has_any_active() or any(
+            gateway._session_owns_pending_process_notification(session) for _, session in sessions
+        ):
+            return "process"
+        return ""
     except Exception:
         if not _probe_failure_logged:
             _probe_failure_logged = True
@@ -145,24 +160,34 @@ def turn_in_flight() -> Optional[bool]:
 
 def should_exit_idle(tracker: IdleClientTracker, grace_s: float,
                      probe: Callable[[], Optional[bool]] = turn_in_flight) -> bool:
-    """Exit only when no client has been connected for ``grace_s`` AND no turn is provably running.
+    """Exit only when no client has been connected for ``grace_s`` and no work is pending.
     A probe that cannot answer keeps the process (fail closed)."""
-    return tracker.idle_for() >= grace_s and probe() is False  # idle_for() is 0 while a client is connected
+    return tracker.idle_for() >= grace_s and not tracker.live_count() and probe() is False
 
 
 def start_idle_watchdog(server, tracker: IdleClientTracker, *, grace_s: float = DEFAULT_IDLE_GRACE_S,
-                        poll_s: float = 15.0, probe: Callable[[], Optional[bool]] = turn_in_flight) -> threading.Thread:
-    """Daemon thread that sets ``server.should_exit`` once :func:`should_exit_idle` holds."""
+                        poll_s: float = 15.0, probe: Callable[[], Optional[bool]] = turn_in_flight,
+                        fence=None) -> threading.Thread:
+    """Daemon thread that retires only after the grace period and a fenced idle proof."""
+    if fence is None:
+        from hermes_cli.backend_retirement import retirement
+
+        fence = retirement
 
     poll_s = min(poll_s, max(0.5, grace_s / 4))
 
     def _loop() -> None:
         while not getattr(server, "should_exit", False):
             if should_exit_idle(tracker, grace_s, probe):
-                _log.warning("SSH-isolated backend idle for %.0fs with no client and no running turn; exiting.",
-                             tracker.idle_for())
-                server.should_exit = True
-                return
+                permit = fence.prepare()
+                if permit.get("ok"):
+                    token = permit["token"]
+                    if tracker.commit_if_idle(grace_s, lambda: fence.commit(token).get("ok", False)):
+                        _log.warning("SSH-isolated backend idle for %.0fs with no client and no pending work; exiting.",
+                                     tracker.idle_for())
+                        server.should_exit = True
+                        return
+                    fence.cancel(token)
             time.sleep(poll_s)
 
     thread = threading.Thread(target=_loop, daemon=True, name="ssh-isolated-idle-watchdog")
