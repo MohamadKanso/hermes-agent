@@ -13,3 +13,4 @@ pr | fix/145820-reclaim-rate-limited-exit | #145820 | fix(kanban): book an expir
 pr | fix/146059-numbered-env-resave | #146059 | fix(credentials): lift suppression when a removed numbered env key is saved again
 pr | fix/146435-plugin-dependency-groups | #146435 | fix(pm): drop dependency-groups from generated plugin workspace members
 pr | fix/147781-bootstrap-failure-context | #147781 | fix(bootstrap): name the failing startup step and stop blaming dependencies for cwd errors
+comment | 134907 | thanks for the field data. moving the `_scratch_pruned_roots.add` after the hourly check does make sense but it changes the once per process behaviour to a stat on every call, so keeping it out of this one to stay small and happy to take it as a follow up if a maintainer wants it
