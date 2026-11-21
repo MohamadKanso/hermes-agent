@@ -1,5 +1,6 @@
 # run log
 
+2026-11-21 12:37 utc | outbox poster | pr create refused for fix/145545-comfyui-timeout-hint: pull request create failed: GraphQL: MohamadKanso does not have the correct permissions to execute `CreatePullRequest` (createPullRequest);commented on #134907
 2026-11-21 utc | new-contribution | no new fix: open pr cap reached, 5 open (151364 134907 134756 132418 116068), nothing pushed
 2026-11-21 10:00 utc | pr-upkeep | 5 open prs, only 134907 changed (brandon-nuttall comment suggesting moving the _scratch_pruned_roots.add after the hourly stamp check, third party, not a review or change request, left code alone and queued a short comment), others untouched since 11-18 or earlier, no reviews, ci failures, merges or closes, nothing pushed, 5 pr lines still stuck in outbox
 2026-11-21 10:00 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
