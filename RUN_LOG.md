@@ -1,5 +1,7 @@
 # run log
 
+2026-11-24 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), only 116068 changed: went dirty after main moved (conflict in config_env.py, main already sends the gemini key in x-goog-api-key), merged main and pushed to fork, test asserts adjusted for no query params, 186 tests green and ruff clean, others untouched since last run, no reviews, ci failures, merges or closes, nothing queued, 5 pr lines still stuck in outbox
+2026-11-24 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-23 21:30 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), nothing changed since the 10:00 run (only 151364 updated, that was our own 11:58 reply to kvnloo, others untouched), no reviews, ci failures, merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
 2026-11-23 21:30 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-23 10:10 utc | new-contribution | no new fix: open pr cap reached, 5 open (151364 134907 134756 132418 116068) and outbox still has unopened pr lines, nothing pushed
