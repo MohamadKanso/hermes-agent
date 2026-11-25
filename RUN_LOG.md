@@ -1,5 +1,7 @@
 # run log
 
+2026-11-25 21:15 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), nothing changed since the earlier run (updated_at unchanged, all mergeable and blocked on review only), no new reviews, ci failures, merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-25 21:15 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-25 utc | new-contribution | no new fix: open pr cap reached (5 open per last upkeep) and outbox still has 5 unopened pr lines (one fix in flight), nothing pushed
 2026-11-25 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), all blocked on review only and none dirty, only 134907 changed: a non-actionable status comment from foma-agent (no question, no code ask), no reviews, ci failures, merges or closes, nothing pushed or queued, 5 pr lines still stuck in outbox
 2026-11-25 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
