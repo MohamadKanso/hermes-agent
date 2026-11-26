@@ -1,5 +1,7 @@
 # run log
 
+2026-11-26 21:10 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), nothing changed since the 09:15 run (only 116068 updated at 11:03 and that was our own probe coverage comment, no reviews, ci, merges or closes), nothing pushed or queued, 5 pr lines still stuck in outbox
+2026-11-26 21:10 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
 2026-11-26 utc | new-contribution | no new fix: outbox still has 5 unopened pr lines (one fix in flight) and last upkeep logged 5 open prs (cap), nothing pushed
 2026-11-26 09:15 utc | pr-upkeep | 5 open prs (151364 134907 134756 132418 116068), nothing changed since the 11-25 21:15 run (updated_at newest is 134907 at 11-25 04:12, already seen), no new reviews, comments, merges or closes, mergeability still reads unknown, nothing pushed or queued, 5 pr lines still stuck in outbox
 2026-11-26 09:15 utc | pr-upkeep | pile-up: 5 open, close candidates listed in report
